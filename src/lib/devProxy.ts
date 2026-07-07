@@ -6,9 +6,26 @@ export interface DevProxyConfig {
   target: string
   changeOrigin: boolean
   secure: boolean
+  locked: boolean
 }
 
 const DEFAULT_PROXY_PREFIX = '/api-proxy'
+
+function normalizeProxyTarget(target: string): string {
+  const trimmed = target.trim()
+  if (!trimmed) return ''
+
+  const input = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`
+
+  try {
+    const url = new URL(input)
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return trimmed.replace(/\/+$/, '')
+  }
+}
 
 export function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim()
@@ -38,7 +55,7 @@ export function normalizeDevProxyConfig(input: unknown): DevProxyConfig | null {
   if (!input || typeof input !== 'object') return null
 
   const record = input as Record<string, unknown>
-  const target = normalizeBaseUrl(typeof record.target === 'string' ? record.target : '')
+  const target = normalizeProxyTarget(typeof record.target === 'string' ? record.target : '')
   if (!target) return null
 
   const rawPrefix = typeof record.prefix === 'string' ? record.prefix : DEFAULT_PROXY_PREFIX
@@ -51,6 +68,7 @@ export function normalizeDevProxyConfig(input: unknown): DevProxyConfig | null {
     target,
     changeOrigin: record.changeOrigin !== false,
     secure: Boolean(record.secure),
+    locked: Boolean(record.locked),
   }
 }
 
@@ -64,7 +82,9 @@ export function buildApiUrl(
   const endpointPath = path.replace(/^\/+/, '')
 
   if (useApiProxy) {
-    return `${proxyConfig?.prefix ?? DEFAULT_PROXY_PREFIX}/${endpointPath}`
+    const target = proxyConfig?.target.replace(/\/+$/, '') ?? ''
+    const proxiedPath = target.endsWith('/v1') ? endpointPath : `v1/${endpointPath}`
+    return `${proxyConfig?.prefix ?? DEFAULT_PROXY_PREFIX}/${proxiedPath}`
   }
 
   const apiPath = normalizedBaseUrl.endsWith('/v1')
@@ -91,7 +111,7 @@ export function isApiProxyAvailable(proxyConfig: DevProxyConfig | null = readCli
 }
 
 export function isApiProxyLocked(proxyConfig: DevProxyConfig | null = readClientDevProxyConfig()): boolean {
-  return readRuntimeEnv(import.meta.env.VITE_API_PROXY_LOCKED) === 'true' && isApiProxyAvailable(proxyConfig)
+  return (readRuntimeEnv(import.meta.env.VITE_API_PROXY_LOCKED) === 'true' || Boolean(proxyConfig?.locked)) && isApiProxyAvailable(proxyConfig)
 }
 
 export function shouldUseApiProxy(apiProxy: boolean, proxyConfig: DevProxyConfig | null = readClientDevProxyConfig()): boolean {

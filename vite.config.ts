@@ -5,6 +5,15 @@ import { normalizeDevProxyConfig } from './src/lib/devProxy'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 
+const DEFAULT_DEV_PROXY_CONFIG = {
+  enabled: true,
+  locked: true,
+  prefix: '/api-proxy',
+  target: 'https://www.yyapi.cloud',
+  changeOrigin: true,
+  secure: true,
+}
+
 function loadDevProxyConfig() {
   try {
     return normalizeDevProxyConfig(
@@ -12,13 +21,13 @@ function loadDevProxyConfig() {
     )
   } catch (error) {
     const err = error as NodeJS.ErrnoException
-    if (err.code === 'ENOENT') return null
+    if (err.code === 'ENOENT') return normalizeDevProxyConfig(DEFAULT_DEV_PROXY_CONFIG)
     throw error
   }
 }
 
 export default defineConfig(({ command }) => {
-  const devProxyConfig = command === 'serve' ? loadDevProxyConfig() : null
+  const devProxyConfig = command === 'serve' && process.env.VITEST !== 'true' ? loadDevProxyConfig() : null
 
   return {
     plugins: [react()],

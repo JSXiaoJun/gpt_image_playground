@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
+  DEFAULT_GEMINI_BASE_URL,
+  DEFAULT_GEMINI_MODEL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
+  createDefaultGeminiProfile,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
   getActiveApiProfile,
@@ -25,19 +28,21 @@ describe('validateApiProfile', () => {
   it('allows empty API URL when API proxy is enabled and available', () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
 
-    expect(validateApiProfile(createDefaultOpenAIProfile({
+    expect(validateApiProfile({
+      ...createDefaultOpenAIProfile(),
       baseUrl: '',
       apiKey: 'test-key',
       apiProxy: true,
-    }))).toBeNull()
+    })).toBeNull()
   })
 
   it('still requires API URL when API proxy is unavailable', () => {
-    expect(validateApiProfile(createDefaultOpenAIProfile({
+    expect(validateApiProfile({
+      ...createDefaultOpenAIProfile(),
       baseUrl: '',
       apiKey: 'test-key',
       apiProxy: true,
-    }))).toBe('缺少 API URL')
+    })).toBe('缺少 API URL')
   })
 })
 
@@ -593,15 +598,15 @@ describe('custom providers', () => {
     expect(profile.model).toBe(DEFAULT_IMAGES_MODEL)
   })
 
-  it('uses API-mode specific streaming defaults and preserves partial image count', () => {
+  it('keeps streaming disabled by default and preserves partial image count', () => {
     expect(createDefaultOpenAIProfile().streamImages).toBe(false)
-    expect(createDefaultOpenAIProfile({ apiMode: 'responses' }).streamImages).toBe(true)
+    expect(createDefaultOpenAIProfile({ apiMode: 'responses' }).streamImages).toBe(false)
     expect(createDefaultOpenAIProfile().streamPartialImages).toBe(1)
     expect(DEFAULT_SETTINGS.streamImages).toBe(false)
     expect(DEFAULT_SETTINGS.streamPartialImages).toBe(1)
     expect(DEFAULT_SETTINGS.profiles[0].streamImages).toBe(false)
     expect(DEFAULT_SETTINGS.profiles[0].streamPartialImages).toBe(1)
-    expect(normalizeSettings({ apiMode: 'responses' }).streamImages).toBe(true)
+    expect(normalizeSettings({ apiMode: 'responses' }).streamImages).toBe(false)
 
     const normalized = normalizeSettings({
       profiles: [
@@ -654,7 +659,7 @@ describe('custom providers', () => {
       ],
     })
 
-    expect(settings.providerOrder).toEqual(['fal', 'openai', 'custom-alpha', 'custom-beta'])
+    expect(settings.providerOrder).toEqual(['fal', 'openai', 'gemini', 'custom-alpha', 'custom-beta'])
   })
 
   it('keeps active custom providers in Images API mode when legacy apiMode is responses', () => {
@@ -682,10 +687,29 @@ describe('custom providers', () => {
     const openaiProfile = createDefaultOpenAIProfile({ apiMode: 'responses', streamImages: true })
 
     const falProfile = switchApiProfileProvider(openaiProfile, 'fal')
+    const geminiProfile = switchApiProfileProvider(openaiProfile, 'gemini')
     const customProfile = switchApiProfileProvider(openaiProfile, provider.id, provider)
 
     expect(falProfile).toMatchObject({ provider: 'fal', apiMode: 'images', streamImages: false })
+    expect(geminiProfile).toMatchObject({ provider: 'gemini', apiMode: 'images', streamImages: false })
     expect(customProfile).toMatchObject({ provider: provider.id, apiMode: 'images', streamImages: false })
+  })
+
+  it('normalizes Gemini profiles with dedicated defaults', () => {
+    const settings = normalizeSettings({
+      profiles: [createDefaultGeminiProfile({ id: 'gemini-profile', baseUrl: '', apiKey: 'gemini-key' })],
+      activeProfileId: 'gemini-profile',
+    })
+
+    expect(settings.profiles[0]).toMatchObject({
+      provider: 'gemini',
+      baseUrl: DEFAULT_GEMINI_BASE_URL,
+      model: DEFAULT_GEMINI_MODEL,
+      apiMode: 'images',
+      codexCli: false,
+      apiProxy: false,
+      streamImages: false,
+    })
   })
 
   it('enables Agent submit auto scroll by default', () => {
@@ -709,6 +733,7 @@ describe('custom providers', () => {
   it('restores OpenAI-compatible URL after switching through fal.ai', () => {
     const openaiProfile = createDefaultOpenAIProfile({
       baseUrl: 'https://api.compat.example.com/v1',
+      apiKey: 'openai-key',
       model: 'custom-openai-model',
       apiProxy: false,
     })
@@ -718,7 +743,21 @@ describe('custom providers', () => {
 
     expect(falProfile.baseUrl).toBe(DEFAULT_FAL_BASE_URL)
     expect(restoredProfile.baseUrl).toBe('https://api.compat.example.com/v1')
+    expect(restoredProfile.apiKey).toBe('openai-key')
     expect(restoredProfile.model).toBe('custom-openai-model')
     expect(restoredProfile.apiProxy).toBe(false)
+  })
+
+  it('keeps separate API keys when switching between OpenAI and Gemini', () => {
+    const openaiProfile = createDefaultOpenAIProfile({ apiKey: 'gpt-key' })
+    const geminiProfile = {
+      ...switchApiProfileProvider(openaiProfile, 'gemini'),
+      apiKey: 'gemini-key',
+    }
+    const restoredOpenAIProfile = switchApiProfileProvider(geminiProfile, 'openai')
+    const restoredGeminiProfile = switchApiProfileProvider(restoredOpenAIProfile, 'gemini')
+
+    expect(restoredOpenAIProfile.apiKey).toBe('gpt-key')
+    expect(restoredGeminiProfile.apiKey).toBe('gemini-key')
   })
 })

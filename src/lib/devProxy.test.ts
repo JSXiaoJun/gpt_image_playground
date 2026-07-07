@@ -4,13 +4,13 @@ import { buildApiUrl } from './devProxy'
 describe('buildApiUrl', () => {
   it('uses the same-origin proxy prefix when API proxy is enabled', () => {
     expect(buildApiUrl('http://api.example.com/v1', 'images/edits', null, true)).toBe(
-      '/api-proxy/images/edits',
+      '/api-proxy/v1/images/edits',
     )
   })
 
   it('leaves API versioning to the proxy target when proxying', () => {
     expect(buildApiUrl('http://api.example.com', 'images/generations', null, true)).toBe(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
     )
   })
 
@@ -25,6 +25,25 @@ describe('buildApiUrl', () => {
           target: 'http://api.example.com/v1',
           changeOrigin: true,
           secure: false,
+          locked: false,
+        },
+        true,
+      ),
+    ).toBe('/openai-proxy/responses')
+  })
+
+  it('does not duplicate v1 when the proxy target already includes it', () => {
+    expect(
+      buildApiUrl(
+        'http://api.example.com/v1',
+        'responses',
+        {
+          enabled: true,
+          prefix: '/openai-proxy',
+          target: 'http://api.example.com/v1',
+          changeOrigin: true,
+          secure: false,
+          locked: false,
         },
         true,
       ),

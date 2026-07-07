@@ -599,7 +599,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -626,7 +626,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -675,7 +675,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api-proxy/custom/images',
+      '/api-proxy/v1/custom/images',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -753,7 +753,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -960,4 +960,101 @@ describe('callImageApi', () => {
       images: ['data:image/png;base64,aW1hZ2U='],
     })
   })
+
+  it('calls Gemini generateContent and extracts inline image data', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            { text: 'done' },
+            { inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } },
+          ],
+        },
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://generativelanguage.googleapis.com',
+        apiKey: 'test-key',
+        model: 'gemini-3.1-flash-image',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'profile-gemini',
+          provider: 'gemini',
+          baseUrl: 'https://generativelanguage.googleapis.com',
+          apiKey: 'test-key',
+          model: 'gemini-3.1-flash-image',
+        }],
+        activeProfileId: 'profile-gemini',
+      },
+      prompt: '画一只猫',
+      params: { ...DEFAULT_PARAMS, size: '2560x1440' },
+      inputImageDataUrls: ['data:image/jpeg;base64,cmVm'],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent')
+    expect((init as RequestInit).headers).toMatchObject({ 'x-goog-api-key': 'test-key' })
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.contents[0].parts).toEqual([
+      { inlineData: { mimeType: 'image/jpeg', data: 'cmVm' } },
+      { text: '画一只猫' },
+    ])
+    expect(body.generationConfig).toMatchObject({
+      responseModalities: ['TEXT', 'IMAGE'],
+      imageConfig: {
+        imageSize: '2K',
+        aspectRatio: '16:9',
+      },
+    })
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(result.actualParams).toEqual({ output_format: 'png', size: '2560x1440' })
+  })
+
+  it('uses the same-origin proxy path for Gemini when API proxy is locked', async () => {
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    vi.stubEnv('VITE_API_PROXY_LOCKED', 'true')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            { inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } },
+          ],
+        },
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        model: 'gemini-3.1-flash-image',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'profile-gemini',
+          provider: 'gemini',
+          baseUrl: 'https://generativelanguage.googleapis.com',
+          apiKey: 'test-key',
+          model: 'gemini-3.1-flash-image',
+          apiProxy: false,
+        }],
+        activeProfileId: 'profile-gemini',
+      },
+      prompt: '画一只猫',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api-proxy/v1beta/models/gemini-3.1-flash-image:generateContent')
+  })
+
 })
