@@ -130,7 +130,7 @@ export interface TaskParams {
 }
 
 export const DEFAULT_PARAMS: TaskParams = {
-  size: 'auto',
+  size: '1024x1024',
   quality: 'auto',
   output_format: 'png',
   output_compression: null,

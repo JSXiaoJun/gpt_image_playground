@@ -568,8 +568,12 @@ function stripPersistedAgentConversations(value: unknown): unknown {
 
 export function migratePersistedState(persistedState: unknown): unknown {
   if (!isRecord(persistedState)) return persistedState
+  const params = isRecord(persistedState.params) && persistedState.params.size === 'auto'
+    ? { ...persistedState.params, size: DEFAULT_PARAMS.size }
+    : persistedState.params
   return {
     ...persistedState,
+    params,
     agentConversations: stripPersistedAgentConversations(persistedState.agentConversations),
   }
 }
