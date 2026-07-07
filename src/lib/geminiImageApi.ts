@@ -10,6 +10,7 @@ import {
   type CallApiOptions,
   type CallApiResult,
 } from './imageApiShared'
+import { fetchWithPersistentProxy } from './persistentProxyFetch'
 
 interface GeminiPart {
   text?: string
@@ -161,7 +162,7 @@ async function callGeminiImageApiSingle(opts: CallApiOptions, profile: ApiProfil
     )
     const imageConfig = buildGeminiImageConfig(opts.params.size)
 
-    const response = await fetch(buildGeminiApiUrl(profile, useApiProxy), {
+    const response = await fetchWithPersistentProxy(buildGeminiApiUrl(profile, useApiProxy), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -182,7 +183,7 @@ async function callGeminiImageApiSingle(opts: CallApiOptions, profile: ApiProfil
         },
       }),
       signal: controller.signal,
-    })
+    }, opts.taskId)
 
     if (!response.ok) throw new Error(await getApiErrorMessage(response))
     const result = extractGeminiImages(await response.json() as GeminiResponse, fallbackMime)

@@ -510,13 +510,13 @@ describe('interrupted OpenAI running tasks', () => {
     expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy-running', 'openai-running'])
     expect(result.tasks.find((item) => item.id === 'legacy-running')).toMatchObject({
       status: 'error',
-      error: expect.stringContaining('请求中断'),
+      error: expect.stringContaining('前端连接中断'),
       finishedAt: now,
       elapsed: 9_000,
     })
     expect(result.tasks.find((item) => item.id === 'openai-running')).toMatchObject({
       status: 'error',
-      error: expect.stringContaining('请求中断'),
+      error: expect.stringContaining('前端连接中断'),
       finishedAt: now,
       elapsed: 8_000,
     })

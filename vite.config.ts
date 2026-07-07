@@ -26,11 +26,126 @@ function loadDevProxyConfig() {
   }
 }
 
+function readRequestBody(req: NodeJS.ReadableStream) {
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyConfig>) {
+  const jobs = new Map<string, {
+    id: string
+    status: 'running' | 'done' | 'error'
+    createdAt: number
+    updatedAt: number
+    response: { status: number; headers: Record<string, string>; body: string } | null
+    error: string | null
+  }>()
+
+  const sendJson = (res: any, status: number, data: unknown) => {
+    res.statusCode = status
+    res.setHeader('content-type', 'application/json; charset=utf-8')
+    res.setHeader('cache-control', 'no-store')
+    res.end(JSON.stringify(data))
+  }
+
+  const buildTargetUrl = (proxiedUrl: string) => {
+    if (!devProxyConfig) throw new Error('开发代理未启用')
+    if (!proxiedUrl.startsWith(`${devProxyConfig.prefix}/`)) throw new Error('仅支持开发代理路径')
+    const path = proxiedUrl.replace(new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\/+`), '')
+    if (!path || path.includes('..') || path.startsWith('/')) throw new Error('代理路径无效')
+    const target = devProxyConfig.target.replace(/\/+$/, '')
+    return `${target}/${path}`
+  }
+
+  const startJob = (id: string, payload: any) => {
+    const job = {
+      id,
+      status: 'running' as const,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      response: null,
+      error: null,
+    }
+    jobs.set(id, job)
+
+    const method = String(payload.method || 'POST').toUpperCase()
+    fetch(buildTargetUrl(String(payload.url || '')), {
+      method,
+      headers: payload.headers || {},
+      body: method === 'GET' || method === 'HEAD'
+        ? undefined
+        : typeof payload.body === 'string' ? payload.body : undefined,
+    })
+      .then(async (response) => {
+        const headers: Record<string, string> = {}
+        response.headers.forEach((value, key) => {
+          if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
+          headers[key] = value
+        })
+        job.status = 'done'
+        job.response = { status: response.status, headers, body: await response.text() }
+        job.updatedAt = Date.now()
+      })
+      .catch((error) => {
+        job.status = 'error'
+        job.error = error instanceof Error ? error.message : String(error)
+        job.updatedAt = Date.now()
+      })
+
+    return job
+  }
+
+  return async (req: any, res: any, next: () => void) => {
+    if (!req.url?.startsWith('/api-jobs/')) {
+      next()
+      return
+    }
+
+    const id = decodeURIComponent(req.url.replace(/^\/api-jobs\/([^/?#]+).*$/, '$1'))
+    if (!/^[\w.-]{1,120}$/.test(id)) {
+      sendJson(res, 400, { error: '任务 ID 无效' })
+      return
+    }
+
+    if (req.method === 'GET') {
+      const job = jobs.get(id)
+      sendJson(res, job ? 200 : 404, job ?? { error: '任务不存在' })
+      return
+    }
+
+    if (req.method === 'POST') {
+      const existing = jobs.get(id)
+      if (existing) {
+        sendJson(res, 200, existing)
+        return
+      }
+      const payload = JSON.parse(await readRequestBody(req))
+      sendJson(res, 202, startJob(id, payload))
+      return
+    }
+
+    sendJson(res, 405, { error: 'Method not allowed' })
+  }
+}
+
 export default defineConfig(({ command }) => {
   const devProxyConfig = command === 'serve' && process.env.VITEST !== 'true' ? loadDevProxyConfig() : null
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: 'persistent-proxy-jobs',
+        configureServer(server) {
+          if (!devProxyConfig?.enabled) return
+          server.middlewares.use(createDevJobMiddleware(devProxyConfig))
+        },
+      },
+    ],
     base: './',
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),

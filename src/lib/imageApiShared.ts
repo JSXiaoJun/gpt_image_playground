@@ -14,6 +14,7 @@ export interface CallApiOptions {
   settings: AppSettings
   prompt: string
   params: TaskParams
+  taskId?: string
   /** 输入图片的 data URL 列表 */
   inputImageDataUrls: string[]
   maskDataUrl?: string

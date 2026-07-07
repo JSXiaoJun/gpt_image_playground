@@ -55,6 +55,8 @@ import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBa
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
+import { OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
+import { hasPersistentProxyJob } from './lib/persistentProxyFetch'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -84,7 +86,6 @@ const agentRoundControllers = new Map<string, AbortController>()
 const agentRecoveryContinuations = new Set<string>()
 let agentConversationPersistenceReady = false
 let agentConversationMigrationPending = false
-const OPENAI_INTERRUPTED_ERROR = '请求中断'
 const AGENT_STOPPED_MESSAGE = '已停止生成。'
 const AGENT_RECOVERY_PAUSE_ERROR = 'AgentRecoveryPauseError'
 const AGENT_CONVERSATION_TITLE_MAX_LENGTH = 28
@@ -1715,9 +1716,10 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
   return Boolean(submitMapping.taskIdPath)
 }
 
-export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
+export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now(), keepRunningIds = new Set<string>()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
+    if (keepRunningIds.has(task.id)) return task
     if (!isRunningOpenAITask(task) || task.customTaskId) return task
 
     const updated: TaskRecord = {
@@ -2129,6 +2131,20 @@ async function recoverFalTask(taskId: string) {
   }
 }
 
+async function getResumablePersistentProxyTaskIds(tasks: TaskRecord[]) {
+  const runningTasks = tasks.filter((task) =>
+    isRunningOpenAITask(task) &&
+    !task.customTaskId &&
+    !task.falRequestId &&
+    !task.falEndpoint,
+  )
+  const checks = await Promise.all(runningTasks.map(async (task) => ({
+    id: task.id,
+    resumable: await hasPersistentProxyJob(task.id),
+  })))
+  return new Set(checks.filter((item) => item.resumable).map((item) => item.id))
+}
+
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
 export async function initStore() {
   const legacyAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)
@@ -2167,7 +2183,8 @@ export async function initStore() {
   if (shouldRewritePersistedLocalState) {
     useStore.setState({})
   }
-  const { tasks: markedTasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks)
+  const resumablePersistentTaskIds = await getResumablePersistentProxyTaskIds(storedTasks)
+  const { tasks: markedTasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks, Date.now(), resumablePersistentTaskIds)
   const interruptedTaskIds = new Set(interruptedTasks.map((task) => task.id))
   const favoriteState = useStore.getState()
   const normalizedFavorites = normalizeLoadedFavoriteState(markedTasks.map(getPersistableTask), favoriteState.favoriteCollections, favoriteState.defaultFavoriteCollectionId)
@@ -2184,6 +2201,9 @@ export async function initStore() {
   useStore.getState().setTasks(tasks)
   showSupportPromptForExistingLocalData(tasks)
   for (const task of tasks) {
+    if (task.status === 'running' && resumablePersistentTaskIds.has(task.id)) {
+      executeTask(task.id)
+    }
     if (
       task.apiProvider === 'fal' &&
       task.falRequestId &&
@@ -4714,6 +4734,7 @@ async function executeTask(taskId: string) {
       settings: requestSettings,
       prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
       params: task.params,
+      taskId,
       inputImageDataUrls: inputDataUrls,
       maskDataUrl,
       onFalRequestEnqueued: (request) => {

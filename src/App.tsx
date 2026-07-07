@@ -29,6 +29,7 @@ export default function App() {
   const setAppMode = useStore((s) => s.setAppMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
+  const hasRunningTasks = useStore((s) => s.tasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable))
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
 
@@ -99,6 +100,18 @@ export default function App() {
   useEffect(() => {
     setAppMode('gallery')
   }, [setAppMode])
+
+  useEffect(() => {
+    if (!hasRunningTasks) return
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = '图片仍在生成中，刷新或关闭页面后当前结果可能无法取回。'
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [hasRunningTasks])
 
   useEffect(() => {
     const preventPageImageDrag = (e: DragEvent) => {

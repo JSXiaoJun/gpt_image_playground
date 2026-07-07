@@ -10,6 +10,10 @@ if [ "${DEFAULT_API_URL+x}" != "x" ]; then
     DEFAULT_API_URL=${API_URL:-https://api.openai.com/v1}
 fi
 API_PROXY_URL=${API_PROXY_URL:-${API_URL:-https://api.openai.com/v1}}
+case "$API_PROXY_URL" in
+    */v1) API_PROXY_URL="${API_PROXY_URL%/v1}" ;;
+    */v1/) API_PROXY_URL="${API_PROXY_URL%/v1/}" ;;
+esac
 
 export DEFAULT_API_URL
 export API_PROXY_URL
