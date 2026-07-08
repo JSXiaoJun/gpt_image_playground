@@ -2273,7 +2273,8 @@ async function completePersistentProxyTaskFromJob(task: TaskRecord, job: Persist
 
 async function recoverPersistentProxyTask(taskId: string) {
   const task = useStore.getState().tasks.find((item) => item.id === taskId)
-  if (!task || !isRunningOpenAITask(task) || task.customTaskId || task.falRequestId || task.falEndpoint) {
+  const canRecover = task && isOpenAITask(task) && (task.status === 'running' || (task.status === 'error' && task.error?.includes('请求超时')))
+  if (!task || !canRecover || task.customTaskId || task.falRequestId || task.falEndpoint) {
     clearPersistentProxyRecoveryTimer(taskId)
     return
   }
@@ -2316,7 +2317,8 @@ async function scanPersistentProxyRunningTasks() {
     const taskIds = useStore.getState().tasks
       .filter((task) =>
         persistentProxyRecoveryTaskIds.has(task.id) &&
-        isRunningOpenAITask(task) &&
+        isOpenAITask(task) &&
+        (task.status === 'running' || (task.status === 'error' && task.error?.includes('请求超时'))) &&
         !task.customTaskId &&
         !task.falRequestId &&
         !task.falEndpoint,
@@ -2336,13 +2338,14 @@ function startPersistentProxyRecoveryScanner() {
 }
 
 async function getResumablePersistentProxyTaskIds(tasks: TaskRecord[]) {
-  const runningTasks = tasks.filter((task) =>
-    isRunningOpenAITask(task) &&
+  const recoverableTasks = tasks.filter((task) =>
+    isOpenAITask(task) &&
+    (task.status === 'running' || (task.status === 'error' && task.error?.includes('请求超时'))) &&
     !task.customTaskId &&
     !task.falRequestId &&
     !task.falEndpoint,
   )
-  const checks = await Promise.all(runningTasks.map(async (task) => ({
+  const checks = await Promise.all(recoverableTasks.map(async (task) => ({
     id: task.id,
     resumable: await hasPersistentProxyJob(task.id),
   })))
@@ -2406,8 +2409,8 @@ export async function initStore() {
   useStore.getState().setTasks(tasks)
   showSupportPromptForExistingLocalData(tasks)
   for (const task of tasks) {
-    if (task.status === 'running' && resumablePersistentTaskIds.has(task.id)) {
-      executeTask(task.id)
+    if (resumablePersistentTaskIds.has(task.id)) {
+      if (task.status === 'running') executeTask(task.id)
       schedulePersistentProxyRecovery(task.id)
     }
     if (
