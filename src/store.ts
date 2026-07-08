@@ -4780,7 +4780,7 @@ async function executeTask(taskId: string) {
       return {
         ...result.actualParams,
         size: result.actualParams?.size ?? firstParams?.size,
-        n: outputIds.length,
+        n: outputIds.length || result.rawImageUrls?.length,
       }
     })()
     const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
@@ -4829,10 +4829,11 @@ async function executeTask(taskId: string) {
     })
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
+    const successCount = outputIds.length || result.rawImageUrls?.length || 0
     const failedCount = result.failedRequests?.length ?? 0
     const completionMessage = failedCount > 0
-      ? `生成完成：成功 ${outputIds.length} 张，失败 ${failedCount} 张`
-      : `生成完成，共 ${outputIds.length} 张图片`
+      ? `生成完成：成功 ${successCount} 张，失败 ${failedCount} 张`
+      : `生成完成，共 ${successCount} 张图片`
     useStore.getState().showToast(completionMessage, failedCount > 0 ? 'error' : 'success')
     if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `${completionMessage}。`)
     const currentMask = useStore.getState().maskDraft

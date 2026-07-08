@@ -273,13 +273,15 @@ export default function TaskCard({
       }).catch(() => {
         if (!cancelled) setThumbSrc('')
       })
+    } else if (task.rawImageUrls?.[0]) {
+      setThumbSrc(task.rawImageUrls[0])
     }
 
     return () => {
       cancelled = true
       unsubscribe?.()
     }
-  }, [task.outputImages])
+  }, [task.outputImages, task.rawImageUrls])
 
   const duration = (() => {
     let seconds: number

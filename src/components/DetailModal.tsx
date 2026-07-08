@@ -153,33 +153,38 @@ export default function DetailModal() {
   const outputSlots = useMemo(() => {
     if (!task) return []
     const outputErrors = task.outputErrors ?? []
+    const rawImageUrls = task.rawImageUrls ?? []
     if (outputErrors.length === 0) {
-      return task.outputImages.map((imageId, outputImageIndex) => ({
+      const count = Math.max(task.outputImages.length, rawImageUrls.length)
+      return Array.from({ length: count }, (_, outputImageIndex) => ({
         requestIndex: outputImageIndex,
         outputImageIndex,
-        imageId,
+        imageId: task.outputImages[outputImageIndex] ?? '',
+        rawUrl: rawImageUrls[outputImageIndex] ?? '',
         error: '',
       }))
     }
 
     const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item.error]))
-    const requestedCount = Math.max(task.params.n, task.outputImages.length + outputErrors.length)
+    const requestedCount = Math.max(task.params.n, task.outputImages.length + rawImageUrls.length + outputErrors.length)
     let outputImageIndex = 0
     return Array.from({ length: requestedCount }, (_, requestIndex) => {
       const error = errorsByIndex.get(requestIndex)
-      if (error) return { requestIndex, outputImageIndex: -1, imageId: '', error }
+      if (error) return { requestIndex, outputImageIndex: -1, imageId: '', rawUrl: '', error }
       const imageId = task.outputImages[outputImageIndex] ?? ''
-      const slot = { requestIndex, outputImageIndex, imageId, error: '' }
+      const rawUrl = rawImageUrls[outputImageIndex] ?? ''
+      const slot = { requestIndex, outputImageIndex, imageId, rawUrl, error: '' }
       outputImageIndex += 1
       return slot
     })
   }, [task])
   const currentOutputSlot = outputSlots[imageIndex]
   const currentOutputImageId = currentOutputSlot?.imageId || ''
+  const currentOutputRawUrl = currentOutputSlot?.rawUrl || ''
   const currentOutputImageIndex = currentOutputSlot?.outputImageIndex ?? -1
   const currentOutputError = currentOutputSlot?.error || ''
   const currentOriginalOutputImageId = currentOutputImageIndex >= 0 ? task?.transparentOriginalImages?.[currentOutputImageIndex] || '' : ''
-  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
+  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || currentOutputRawUrl : currentOutputRawUrl
 
   useEffect(() => {
     const outputImageIds = task?.outputImages ?? []
@@ -237,8 +242,9 @@ export default function DetailModal() {
   const showReferenceSection = allInputImageIds.length > 0 || isAgentEditTool
 
   const outputLen = outputSlots.length
-  const currentImageRatio = currentOutputImageId ? imageRatios[currentOutputImageId] : ''
-  const currentImageSize = currentOutputImageId ? imageSizes[currentOutputImageId] : ''
+  const currentImageKey = currentOutputImageId || currentOutputRawUrl
+  const currentImageRatio = currentImageKey ? imageRatios[currentImageKey] : ''
+  const currentImageSize = currentImageKey ? imageSizes[currentImageKey] : ''
   const baseActualParams = currentOutputImageId
     ? task.actualParamsByImage?.[currentOutputImageId] ?? task.actualParams
     : task.actualParams
@@ -463,7 +469,7 @@ export default function DetailModal() {
 
         {/* 左侧：图片 */}
         <div className="md:w-1/2 w-full h-64 md:h-auto bg-gray-100 dark:bg-black/20 relative flex items-center justify-center flex-shrink-0 min-h-[16rem]">
-          {task.status === 'done' && outputLen > 0 && (currentOutputImageId || task.outputImages.length > 0) && (
+          {task.status === 'done' && outputLen > 0 && (currentOutputImageId || currentOutputRawUrl || task.outputImages.length > 0) && (
             <div className="absolute right-3 top-[15px] z-20 flex items-center gap-1.5">
               {currentOutputImageId && (
                 <div className="relative group flex">
@@ -514,20 +520,24 @@ export default function DetailModal() {
                 className="saveable-image max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] object-contain cursor-pointer"
                 onLoad={(e) => {
                   const image = e.currentTarget
-                  if (currentOutputImageId && image.naturalWidth > 0 && image.naturalHeight > 0) {
+                  if (currentImageKey && image.naturalWidth > 0 && image.naturalHeight > 0) {
                     setImageRatios((prev) => ({
                       ...prev,
-                      [currentOutputImageId]: formatImageRatio(image.naturalWidth, image.naturalHeight),
+                      [currentImageKey]: formatImageRatio(image.naturalWidth, image.naturalHeight),
                     }))
                     setImageSizes((prev) => ({
                       ...prev,
-                      [currentOutputImageId]: `${image.naturalWidth}×${image.naturalHeight}`,
+                      [currentImageKey]: `${image.naturalWidth}×${image.naturalHeight}`,
                     }))
                   }
                 }}
-                onClick={() =>
-                  setLightboxImageId(currentOutputImageId, task.outputImages)
-                }
+                onClick={() => {
+                  if (currentOutputImageId) {
+                    setLightboxImageId(currentOutputImageId, task.outputImages)
+                  } else if (currentOutputRawUrl) {
+                    window.open(currentOutputRawUrl, '_blank', 'noopener,noreferrer')
+                  }
+                }}
                 alt=""
               />
               <div data-selectable-text className="absolute left-4 top-[15px] flex items-center gap-1.5">
@@ -1055,12 +1065,32 @@ export default function DetailModal() {
             </button>
             <button
               onClick={handleEdit}
-              disabled={!outputLen}
+              disabled={!task.outputImages.length}
               className="col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-green-50 dark:bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap"
             >
               <EditIcon className="w-4 h-4 flex-shrink-0" />
               编辑输出
             </button>
+            {rawImageUrls.length > 0 && (
+              <button
+                onClick={async () => {
+                  if (rawImageUrls.length === 1) {
+                    try {
+                      await copyTextToClipboard(rawImageUrls[0])
+                      showToast('在线链接已复制', 'success')
+                    } catch (err) {
+                      showToast(getClipboardFailureMessage('复制链接失败', err), 'error')
+                    }
+                    return
+                  }
+                  setShowRawUrlsModal(true)
+                }}
+                className="col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition text-sm font-medium whitespace-nowrap"
+              >
+                <LinkIcon className="w-4 h-4 flex-shrink-0" />
+                在线链接
+              </button>
+            )}
             <button
               onClick={handleDelete}
               className="col-span-3 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition text-sm font-medium whitespace-nowrap"
