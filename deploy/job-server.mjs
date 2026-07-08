@@ -2,7 +2,9 @@ import http from 'node:http'
 
 const host = process.env.JOB_SERVER_HOST || '127.0.0.1'
 const port = Number(process.env.JOB_SERVER_PORT || 8787)
-const jobTtlMs = Number(process.env.JOB_TTL_MS || 2 * 60 * 60 * 1000)
+const rawJobTtl = Number(process.env.JOB_TTL_MS || 2 * 60 * 60 * 1000)
+const normalizedJobTtlMs = rawJobTtl > 0 && rawJobTtl < 10_000 ? rawJobTtl * 1000 : rawJobTtl
+const jobTtlMs = Math.max(10 * 60 * 1000, Number.isFinite(normalizedJobTtlMs) ? normalizedJobTtlMs : 2 * 60 * 60 * 1000)
 const jobs = new Map()
 
 function sendJson(res, status, data) {
@@ -88,6 +90,8 @@ function startJob(id, payload) {
     ? undefined
     : typeof payload.body === 'string' ? payload.body : undefined
 
+  console.log(`job ${id} started: ${method} ${targetUrl}`)
+
   fetch(targetUrl, {
     method,
     headers,
@@ -107,11 +111,13 @@ function startJob(id, payload) {
         body: await response.text(),
       }
       job.updatedAt = Date.now()
+      console.log(`job ${id} done: HTTP ${response.status}`)
     })
     .catch((err) => {
       job.status = 'error'
       job.error = err instanceof Error ? err.message : String(err)
       job.updatedAt = Date.now()
+      console.error(`job ${id} error: ${job.error}`)
     })
 
   return job
@@ -120,6 +126,7 @@ function startJob(id, payload) {
 function cleanupJobs() {
   const now = Date.now()
   for (const [id, job] of jobs) {
+    if (job.status === 'running') continue
     if (now - job.updatedAt > jobTtlMs) jobs.delete(id)
   }
 }
