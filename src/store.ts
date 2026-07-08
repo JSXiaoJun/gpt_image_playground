@@ -4757,6 +4757,7 @@ async function executeTask(taskId: string) {
         void persistTaskStreamPartialImage(taskId, partial.image)
       },
     })
+    const apiFinishedAt = Date.now()
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
@@ -4822,6 +4823,7 @@ async function executeTask(taskId: string) {
       status: 'done',
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
+      apiElapsed: apiFinishedAt - task.createdAt,
       falRecoverable: false,
       customRecoverable: false,
     })

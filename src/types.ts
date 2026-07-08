@@ -214,6 +214,8 @@ export interface TaskRecord {
   finishedAt: number | null
   /** 总耗时毫秒 */
   elapsed: number | null
+  /** API 返回耗时毫秒，不包含图片 URL 下载/本地入库 */
+  apiElapsed?: number | null
   /** 是否收藏 */
   isFavorite?: boolean
   /** 所属收藏夹 ID 列表 */

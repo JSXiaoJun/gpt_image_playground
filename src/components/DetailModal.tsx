@@ -286,8 +286,9 @@ export default function DetailModal() {
       const ss = String(seconds % 60).padStart(2, '0')
       return `${mm}:${ss}`
     }
-    if (task.elapsed == null) return null
-    const seconds = Math.floor(task.elapsed / 1000)
+    const elapsed = task.apiElapsed ?? task.elapsed
+    if (elapsed == null) return null
+    const seconds = Math.floor(elapsed / 1000)
     const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
     const ss = String(seconds % 60).padStart(2, '0')
     return `${mm}:${ss}`

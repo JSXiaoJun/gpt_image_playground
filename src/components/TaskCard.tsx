@@ -285,8 +285,8 @@ export default function TaskCard({
     let seconds: number
     if (task.status === 'running' || task.falRecoverable || task.customRecoverable) {
       seconds = Math.floor((now - task.createdAt) / 1000)
-    } else if (task.elapsed != null) {
-      seconds = Math.floor(task.elapsed / 1000)
+    } else if ((task.apiElapsed ?? task.elapsed) != null) {
+      seconds = Math.floor((task.apiElapsed ?? task.elapsed ?? 0) / 1000)
     } else {
       return '00:00'
     }
