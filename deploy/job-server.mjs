@@ -5,9 +5,11 @@ const port = Number(process.env.JOB_SERVER_PORT || 8787)
 const rawJobTtl = Number(process.env.JOB_TTL_MS || 2 * 60 * 60 * 1000)
 const normalizedJobTtlMs = rawJobTtl > 0 && rawJobTtl < 10_000 ? rawJobTtl * 1000 : rawJobTtl
 const jobTtlMs = Math.max(10 * 60 * 1000, Number.isFinite(normalizedJobTtlMs) ? normalizedJobTtlMs : 2 * 60 * 60 * 1000)
-const rawUpstreamTimeout = Number(process.env.JOB_UPSTREAM_TIMEOUT_MS || 180 * 1000)
+const rawUpstreamTimeout = Number(process.env.JOB_UPSTREAM_TIMEOUT_MS || 0)
 const normalizedUpstreamTimeoutMs = rawUpstreamTimeout > 0 && rawUpstreamTimeout < 10_000 ? rawUpstreamTimeout * 1000 : rawUpstreamTimeout
-const upstreamTimeoutMs = Math.max(30 * 1000, Number.isFinite(normalizedUpstreamTimeoutMs) ? normalizedUpstreamTimeoutMs : 180 * 1000)
+const upstreamTimeoutMs = Number.isFinite(normalizedUpstreamTimeoutMs) && normalizedUpstreamTimeoutMs > 0
+  ? Math.max(30 * 1000, normalizedUpstreamTimeoutMs)
+  : 0
 const jobs = new Map()
 
 function sendJson(res, status, data) {
@@ -131,9 +133,11 @@ function startJob(id, payload) {
     : typeof payload.body === 'string' ? payload.body : undefined
 
   console.log(`job ${id} started: ${method} ${targetUrl}`)
-  const upstreamTimeout = setTimeout(() => {
-    controller.abort(new Error(`上游请求超过 ${Math.round(upstreamTimeoutMs / 1000)} 秒仍未返回`))
-  }, upstreamTimeoutMs)
+  const upstreamTimeout = upstreamTimeoutMs > 0
+    ? setTimeout(() => {
+        controller.abort(new Error(`上游请求超过 ${Math.round(upstreamTimeoutMs / 1000)} 秒仍未返回`))
+      }, upstreamTimeoutMs)
+    : null
 
   fetch(targetUrl, {
     method,
@@ -153,20 +157,21 @@ function startJob(id, payload) {
         responseHeaders[key] = value
       })
       const responseBody = await response.text()
-      clearTimeout(upstreamTimeout)
-      job.status = 'done'
-      job.phase = 'done'
       job.responseBytes = Buffer.byteLength(responseBody, 'utf8')
       job.response = {
         status: response.status,
         headers: responseHeaders,
         body: responseBody,
       }
+      if (upstreamTimeout) clearTimeout(upstreamTimeout)
+      job.status = response.ok ? 'done' : 'error'
+      job.phase = response.ok ? 'done' : 'error'
+      job.error = response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
       job.updatedAt = Date.now()
-      console.log(`job ${id} done: HTTP ${response.status}, ${job.responseBytes} bytes`)
+      console.log(`job ${id} ${job.status}: HTTP ${response.status}, ${job.responseBytes} bytes`)
     })
     .catch((err) => {
-      clearTimeout(upstreamTimeout)
+      if (upstreamTimeout) clearTimeout(upstreamTimeout)
       job.status = 'error'
       job.phase = 'error'
       job.upstreamElapsedMs = Date.now() - now
