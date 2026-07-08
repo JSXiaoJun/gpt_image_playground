@@ -84,8 +84,11 @@ const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const persistentProxyRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const persistentProxyRecoveryTaskIds = new Set<string>()
 const taskExecutionStartedAtById = new Map<string, number>()
 const taskCompletionIds = new Set<string>()
+let persistentProxyRecoveryScanner: ReturnType<typeof setInterval> | null = null
+let persistentProxyRecoveryScanRunning = false
 const agentRoundControllers = new Map<string, AbortController>()
 const agentRecoveryContinuations = new Set<string>()
 let agentConversationPersistenceReady = false
@@ -2139,10 +2142,13 @@ function clearPersistentProxyRecoveryTimer(taskId: string) {
   const timer = persistentProxyRecoveryTimers.get(taskId)
   if (timer) clearTimeout(timer)
   persistentProxyRecoveryTimers.delete(taskId)
+  persistentProxyRecoveryTaskIds.delete(taskId)
 }
 
 function schedulePersistentProxyRecovery(taskId: string, delay = PERSISTENT_PROXY_RECOVERY_POLL_MS) {
+  persistentProxyRecoveryTaskIds.add(taskId)
   clearPersistentProxyRecoveryTimer(taskId)
+  persistentProxyRecoveryTaskIds.add(taskId)
   const timer = setTimeout(() => {
     persistentProxyRecoveryTimers.delete(taskId)
     void recoverPersistentProxyTask(taskId)
@@ -2188,6 +2194,32 @@ async function recoverPersistentProxyTask(taskId: string) {
   schedulePersistentProxyRecovery(taskId)
 }
 
+async function scanPersistentProxyRunningTasks() {
+  if (persistentProxyRecoveryScanRunning) return
+  persistentProxyRecoveryScanRunning = true
+  try {
+    const taskIds = useStore.getState().tasks
+      .filter((task) =>
+        persistentProxyRecoveryTaskIds.has(task.id) &&
+        isRunningOpenAITask(task) &&
+        !task.customTaskId &&
+        !task.falRequestId &&
+        !task.falEndpoint,
+      )
+      .map((task) => task.id)
+    await Promise.all(taskIds.map((taskId) => recoverPersistentProxyTask(taskId)))
+  } finally {
+    persistentProxyRecoveryScanRunning = false
+  }
+}
+
+function startPersistentProxyRecoveryScanner() {
+  if (persistentProxyRecoveryScanner || typeof window === 'undefined') return
+  persistentProxyRecoveryScanner = window.setInterval(() => {
+    void scanPersistentProxyRunningTasks()
+  }, PERSISTENT_PROXY_RECOVERY_POLL_MS)
+}
+
 async function getResumablePersistentProxyTaskIds(tasks: TaskRecord[]) {
   const runningTasks = tasks.filter((task) =>
     isRunningOpenAITask(task) &&
@@ -2204,6 +2236,7 @@ async function getResumablePersistentProxyTaskIds(tasks: TaskRecord[]) {
 
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
 export async function initStore() {
+  startPersistentProxyRecoveryScanner()
   const legacyAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)
   const storedTasks = await getAllTasks()
   const storedAgentConversations = normalizeAgentConversations(await getAllAgentConversations())
@@ -2538,6 +2571,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   useStore.getState().setReusedTaskApiProfile(null)
 
   // 异步调用 API
+  startPersistentProxyRecoveryScanner()
   executeTask(taskId)
   schedulePersistentProxyRecovery(taskId)
 }
@@ -5205,6 +5239,7 @@ export async function retryTask(task: TaskRecord) {
   useStore.getState().setTasks([newTask, ...latestTasks])
   await putTask(newTask)
 
+  startPersistentProxyRecoveryScanner()
   executeTask(taskId)
   schedulePersistentProxyRecovery(taskId)
 }
