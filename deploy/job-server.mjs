@@ -5,6 +5,9 @@ const port = Number(process.env.JOB_SERVER_PORT || 8787)
 const rawJobTtl = Number(process.env.JOB_TTL_MS || 2 * 60 * 60 * 1000)
 const normalizedJobTtlMs = rawJobTtl > 0 && rawJobTtl < 10_000 ? rawJobTtl * 1000 : rawJobTtl
 const jobTtlMs = Math.max(10 * 60 * 1000, Number.isFinite(normalizedJobTtlMs) ? normalizedJobTtlMs : 2 * 60 * 60 * 1000)
+const rawUpstreamTimeout = Number(process.env.JOB_UPSTREAM_TIMEOUT_MS || 180 * 1000)
+const normalizedUpstreamTimeoutMs = rawUpstreamTimeout > 0 && rawUpstreamTimeout < 10_000 ? rawUpstreamTimeout * 1000 : rawUpstreamTimeout
+const upstreamTimeoutMs = Math.max(30 * 1000, Number.isFinite(normalizedUpstreamTimeoutMs) ? normalizedUpstreamTimeoutMs : 180 * 1000)
 const jobs = new Map()
 
 function sendJson(res, status, data) {
@@ -128,6 +131,9 @@ function startJob(id, payload) {
     : typeof payload.body === 'string' ? payload.body : undefined
 
   console.log(`job ${id} started: ${method} ${targetUrl}`)
+  const upstreamTimeout = setTimeout(() => {
+    controller.abort(new Error(`上游请求超过 ${Math.round(upstreamTimeoutMs / 1000)} 秒仍未返回`))
+  }, upstreamTimeoutMs)
 
   fetch(targetUrl, {
     method,
@@ -147,6 +153,7 @@ function startJob(id, payload) {
         responseHeaders[key] = value
       })
       const responseBody = await response.text()
+      clearTimeout(upstreamTimeout)
       job.status = 'done'
       job.phase = 'done'
       job.responseBytes = Buffer.byteLength(responseBody, 'utf8')
@@ -159,9 +166,14 @@ function startJob(id, payload) {
       console.log(`job ${id} done: HTTP ${response.status}, ${job.responseBytes} bytes`)
     })
     .catch((err) => {
+      clearTimeout(upstreamTimeout)
       job.status = 'error'
       job.phase = 'error'
-      job.error = err instanceof Error ? err.message : String(err)
+      job.upstreamElapsedMs = Date.now() - now
+      const abortReason = controller.signal.reason
+      job.error = abortReason instanceof Error
+        ? abortReason.message
+        : err instanceof Error ? err.message : String(err)
       job.updatedAt = Date.now()
       console.error(`job ${id} error: ${job.error}`)
     })
