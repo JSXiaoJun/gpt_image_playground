@@ -2158,7 +2158,10 @@ async function recoverPersistentProxyTask(taskId: string) {
   }
 
   const job = await readPersistentProxyJob(taskId).catch(() => null)
-  if (!job) return
+  if (!job) {
+    schedulePersistentProxyRecovery(taskId)
+    return
+  }
 
   if (job.status === 'error') {
     clearOpenAIWatchdogTimer(taskId)
