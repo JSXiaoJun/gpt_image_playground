@@ -6,6 +6,7 @@ import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL, DEFAULT_GEMINI_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { isInterruptedTaskError } from '../lib/taskStatus'
+import { getDisplayImageUrl } from '../lib/imageProxy'
 import { CodeIcon, TransparentBgIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
@@ -274,7 +275,7 @@ export default function TaskCard({
         if (!cancelled) setThumbSrc('')
       })
     } else if (task.rawImageUrls?.[0]) {
-      setThumbSrc(task.rawImageUrls[0])
+      setThumbSrc(getDisplayImageUrl(task.rawImageUrls[0]))
     }
 
     return () => {

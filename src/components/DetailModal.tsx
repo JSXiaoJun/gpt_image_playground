@@ -13,6 +13,7 @@ import { getApiProviderLabel } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
 import { isInterruptedTaskError } from '../lib/taskStatus'
+import { getDisplayImageUrl } from '../lib/imageProxy'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
 
 import ViewportTooltip from './ViewportTooltip'
@@ -181,10 +182,11 @@ export default function DetailModal() {
   const currentOutputSlot = outputSlots[imageIndex]
   const currentOutputImageId = currentOutputSlot?.imageId || ''
   const currentOutputRawUrl = currentOutputSlot?.rawUrl || ''
+  const currentOutputDisplayRawUrl = currentOutputRawUrl ? getDisplayImageUrl(currentOutputRawUrl) : ''
   const currentOutputImageIndex = currentOutputSlot?.outputImageIndex ?? -1
   const currentOutputError = currentOutputSlot?.error || ''
   const currentOriginalOutputImageId = currentOutputImageIndex >= 0 ? task?.transparentOriginalImages?.[currentOutputImageIndex] || '' : ''
-  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || currentOutputRawUrl : currentOutputRawUrl
+  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || currentOutputDisplayRawUrl : currentOutputDisplayRawUrl
 
   useEffect(() => {
     const outputImageIds = task?.outputImages ?? []

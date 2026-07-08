@@ -73,6 +73,35 @@ function publicJob(job) {
   }
 }
 
+async function proxyImage(req, res) {
+  const requestUrl = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`)
+  const rawUrl = requestUrl.searchParams.get('url') || ''
+  const targetUrl = new URL(rawUrl)
+  if (targetUrl.protocol !== 'https:' && targetUrl.protocol !== 'http:') throw new Error('图片链接协议无效')
+
+  const response = await fetch(targetUrl, {
+    headers: {
+      accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      'user-agent': 'gpt-image-playground-image-proxy/1.0',
+    },
+  })
+  if (!response.ok) {
+    sendJson(res, response.status, { error: `图片加载失败：HTTP ${response.status}` })
+    return
+  }
+
+  const contentType = response.headers.get('content-type') || 'application/octet-stream'
+  if (!contentType.toLowerCase().startsWith('image/')) throw new Error('目标链接不是图片响应')
+
+  const body = Buffer.from(await response.arrayBuffer())
+  res.writeHead(200, {
+    'content-type': contentType,
+    'cache-control': 'public, max-age=86400',
+    'content-length': body.length,
+  })
+  res.end(body)
+}
+
 function startJob(id, payload) {
   const now = Date.now()
   const controller = new AbortController()
@@ -158,6 +187,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
       res.end()
+      return
+    }
+
+    if (req.method === 'GET' && req.url?.startsWith('/image-proxy?')) {
+      await proxyImage(req, res)
       return
     }
 
