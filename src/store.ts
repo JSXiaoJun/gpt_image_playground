@@ -56,7 +56,7 @@ import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
 import { OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
-import { hasPersistentProxyJob } from './lib/persistentProxyFetch'
+import { hasPersistentProxyJob, readPersistentProxyJob } from './lib/persistentProxyFetch'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -76,12 +76,16 @@ const MAX_THUMBNAIL_CACHE_ENTRIES = 80
 const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
+const PERSISTENT_PROXY_RECOVERY_POLL_MS = 2_000
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const persistentProxyRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const taskExecutionStartedAtById = new Map<string, number>()
+const taskCompletionIds = new Set<string>()
 const agentRoundControllers = new Map<string, AbortController>()
 const agentRecoveryContinuations = new Set<string>()
 let agentConversationPersistenceReady = false
@@ -2131,6 +2135,56 @@ async function recoverFalTask(taskId: string) {
   }
 }
 
+function clearPersistentProxyRecoveryTimer(taskId: string) {
+  const timer = persistentProxyRecoveryTimers.get(taskId)
+  if (timer) clearTimeout(timer)
+  persistentProxyRecoveryTimers.delete(taskId)
+}
+
+function schedulePersistentProxyRecovery(taskId: string, delay = PERSISTENT_PROXY_RECOVERY_POLL_MS) {
+  clearPersistentProxyRecoveryTimer(taskId)
+  const timer = setTimeout(() => {
+    persistentProxyRecoveryTimers.delete(taskId)
+    void recoverPersistentProxyTask(taskId)
+  }, delay)
+  persistentProxyRecoveryTimers.set(taskId, timer)
+}
+
+async function recoverPersistentProxyTask(taskId: string) {
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task || !isRunningOpenAITask(task) || task.customTaskId || task.falRequestId || task.falEndpoint) {
+    clearPersistentProxyRecoveryTimer(taskId)
+    return
+  }
+
+  const job = await readPersistentProxyJob(taskId).catch(() => null)
+  if (!job) return
+
+  if (job.status === 'error') {
+    clearOpenAIWatchdogTimer(taskId)
+    clearPersistentProxyRecoveryTimer(taskId)
+    updateTaskInStore(taskId, {
+      status: 'error',
+      error: job.error || '任务代理请求失败',
+      falRecoverable: false,
+      customRecoverable: false,
+      finishedAt: Date.now(),
+      elapsed: Date.now() - task.createdAt,
+    })
+    return
+  }
+
+  if (job.status === 'done') {
+    await executeTask(taskId, true)
+    if (useStore.getState().tasks.some((item) => item.id === taskId && item.status === 'running')) {
+      schedulePersistentProxyRecovery(taskId)
+    }
+    return
+  }
+
+  schedulePersistentProxyRecovery(taskId)
+}
+
 async function getResumablePersistentProxyTaskIds(tasks: TaskRecord[]) {
   const runningTasks = tasks.filter((task) =>
     isRunningOpenAITask(task) &&
@@ -2203,6 +2257,7 @@ export async function initStore() {
   for (const task of tasks) {
     if (task.status === 'running' && resumablePersistentTaskIds.has(task.id)) {
       executeTask(task.id)
+      schedulePersistentProxyRecovery(task.id)
     }
     if (
       task.apiProvider === 'fal' &&
@@ -2481,6 +2536,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   // 异步调用 API
   executeTask(taskId)
+  schedulePersistentProxyRecovery(taskId)
 }
 
 function getActiveAgentConversation(): AgentConversation {
@@ -4678,12 +4734,17 @@ async function executeAgentRound(
   }
 }
 
-async function executeTask(taskId: string) {
+async function executeTask(taskId: string, allowTakeover = false) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
   if (!task) return
+  const existingExecutionStartedAt = taskExecutionStartedAtById.get(taskId)
+  if (existingExecutionStartedAt && (!allowTakeover || Date.now() - existingExecutionStartedAt < PERSISTENT_PROXY_RECOVERY_POLL_MS)) return
+  const executionStartedAt = Date.now()
+  taskExecutionStartedAtById.set(taskId, executionStartedAt)
   const taskProfile = getTaskApiProfile(settings, task)
   if (!taskProfile && task.apiProfileId) {
+    taskExecutionStartedAtById.delete(taskId)
     updateTaskInStore(taskId, {
       status: 'error',
       error: '找不到此任务所使用的 API 配置。',
@@ -4764,6 +4825,8 @@ async function executeTask(taskId: string) {
       useStore.getState().setTaskStreamPreview(taskId)
       return
     }
+    if (taskCompletionIds.has(taskId)) return
+    taskCompletionIds.add(taskId)
 
     // 存储输出图片
     const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
@@ -4810,6 +4873,7 @@ async function executeTask(taskId: string) {
     }
     const partialImageIdsToClean = latestBeforeUpdate.streamPartialImageIds || []
     clearOpenAIWatchdogTimer(taskId)
+    clearPersistentProxyRecoveryTimer(taskId)
     useStore.getState().setTaskStreamPreview(taskId)
     updateTaskInStore(taskId, {
       outputImages: outputIds,
@@ -4847,6 +4911,7 @@ async function executeTask(taskId: string) {
     }
   } catch (err) {
     clearOpenAIWatchdogTimer(taskId)
+    clearPersistentProxyRecoveryTimer(taskId)
     const latestTask = useStore.getState().tasks.find((t) => t.id === taskId) ?? task
     if (latestTask.status !== 'running') return
     useStore.getState().setTaskStreamPreview(taskId)
@@ -4903,6 +4968,10 @@ async function executeTask(taskId: string) {
       useStore.getState().setDetailTaskId(taskId)
     }
   } finally {
+    if (taskExecutionStartedAtById.get(taskId) === executionStartedAt) {
+      taskExecutionStartedAtById.delete(taskId)
+    }
+    taskCompletionIds.delete(taskId)
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
     for (const imgId of task.inputImageIds) {
       imageCache.delete(imgId)
@@ -5134,6 +5203,7 @@ export async function retryTask(task: TaskRecord) {
   await putTask(newTask)
 
   executeTask(taskId)
+  schedulePersistentProxyRecovery(taskId)
 }
 
 /** 复用配置 */

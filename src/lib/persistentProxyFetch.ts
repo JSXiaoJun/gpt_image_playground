@@ -63,7 +63,7 @@ function wait(ms: number, signal?: AbortSignal) {
   })
 }
 
-async function readJob(jobId: string) {
+export async function readPersistentProxyJob(jobId: string) {
   const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store' })
   if (!response.ok) return null
   return await response.json() as JobResponse
@@ -71,7 +71,7 @@ async function readJob(jobId: string) {
 
 async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
   while (true) {
-    const job = await readJob(jobId)
+    const job = await readPersistentProxyJob(jobId)
     if (!job) throw new Error('任务代理记录不存在')
 
     if (job.status === 'done') {
@@ -117,5 +117,5 @@ export async function fetchWithPersistentProxy(url: string, init: RequestInit, j
 
 export async function hasPersistentProxyJob(jobId: string) {
   if (!canReachPersistentProxyJobServer() || !isApiProxyAvailable()) return false
-  return Boolean(await readJob(jobId).catch(() => null))
+  return Boolean(await readPersistentProxyJob(jobId).catch(() => null))
 }
