@@ -167,7 +167,13 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     else if (errJson.message) errorMsg = errJson.message
   } catch {
     try {
-      errorMsg = await textResponse.text()
+      const text = await textResponse.text()
+      const contentType = response.headers.get('content-type') ?? ''
+      if (/html/i.test(contentType) || /^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text)) {
+        errorMsg = `上游接口返回 HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}，请稍后重试。`
+      } else if (text.trim()) {
+        errorMsg = text
+      }
     } catch {
       /* ignore */
     }

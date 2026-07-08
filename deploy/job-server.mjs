@@ -62,8 +62,12 @@ function publicJob(job) {
   return {
     id: job.id,
     status: job.status,
+    phase: job.phase,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
+    upstreamStatus: job.upstreamStatus,
+    upstreamElapsedMs: job.upstreamElapsedMs,
+    responseBytes: job.responseBytes,
     response: job.response,
     error: job.error,
   }
@@ -75,8 +79,12 @@ function startJob(id, payload) {
   const job = {
     id,
     status: 'running',
+    phase: 'pending',
     createdAt: now,
     updatedAt: now,
+    upstreamStatus: null,
+    upstreamElapsedMs: null,
+    responseBytes: null,
     response: null,
     error: null,
     controller,
@@ -99,22 +107,31 @@ function startJob(id, payload) {
     signal: controller.signal,
   })
     .then(async (response) => {
+      job.phase = 'response_received'
+      job.upstreamStatus = response.status
+      job.upstreamElapsedMs = Date.now() - now
+      job.updatedAt = Date.now()
+      console.log(`job ${id} response received: HTTP ${response.status}, ${job.upstreamElapsedMs}ms`)
       const responseHeaders = {}
       response.headers.forEach((value, key) => {
         if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
         responseHeaders[key] = value
       })
+      const responseBody = await response.text()
       job.status = 'done'
+      job.phase = 'done'
+      job.responseBytes = Buffer.byteLength(responseBody, 'utf8')
       job.response = {
         status: response.status,
         headers: responseHeaders,
-        body: await response.text(),
+        body: responseBody,
       }
       job.updatedAt = Date.now()
-      console.log(`job ${id} done: HTTP ${response.status}`)
+      console.log(`job ${id} done: HTTP ${response.status}, ${job.responseBytes} bytes`)
     })
     .catch((err) => {
       job.status = 'error'
+      job.phase = 'error'
       job.error = err instanceof Error ? err.message : String(err)
       job.updatedAt = Date.now()
       console.error(`job ${id} error: ${job.error}`)

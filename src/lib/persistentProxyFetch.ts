@@ -4,6 +4,10 @@ import { readRuntimeEnv } from './runtimeEnv'
 interface JobResponse {
   id: string
   status: 'running' | 'done' | 'error'
+  phase?: 'pending' | 'response_received' | 'done' | 'error'
+  upstreamStatus?: number | null
+  upstreamElapsedMs?: number | null
+  responseBytes?: number | null
   response?: {
     status: number
     headers: Record<string, string>
