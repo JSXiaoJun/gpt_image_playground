@@ -4918,6 +4918,7 @@ async function executeTask(taskId: string, allowTakeover = false) {
     : null
 
   if (
+    !persistentProxyRecoveryTaskIds.has(taskId) &&
     taskProvider !== 'fal' &&
     !isAsyncCustomProviderTask(requestSettings, taskProvider, task.inputImageIds.length > 0) &&
     !usesConcurrentOpenAIImageRequests(activeProfile, task.params)

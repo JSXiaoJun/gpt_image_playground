@@ -112,7 +112,9 @@ export async function fetchWithPersistentProxy(url: string, init: RequestInit, j
     throw new Error(text || `任务代理启动失败：${response.status}`)
   }
 
-  return pollJob(jobId!, init.signal ?? undefined)
+  // 持久化任务由后端 job-server 接管，前端的请求超时只应该中断普通直连请求。
+  // 这里不能传 init.signal，否则超过接口配置的 timeout 后会把仍在后台运行的任务误标失败。
+  return pollJob(jobId!)
 }
 
 export async function hasPersistentProxyJob(jobId: string) {
