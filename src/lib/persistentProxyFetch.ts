@@ -1,7 +1,7 @@
 import { isApiProxyAvailable } from './devProxy'
 import { readRuntimeEnv } from './runtimeEnv'
 
-interface JobResponse {
+export interface PersistentProxyJobResponse {
   id: string
   status: 'running' | 'done' | 'error'
   phase?: 'pending' | 'response_received' | 'done' | 'error'
@@ -66,7 +66,7 @@ function wait(ms: number, signal?: AbortSignal) {
 export async function readPersistentProxyJob(jobId: string) {
   const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store' })
   if (!response.ok) return null
-  return await response.json() as JobResponse
+  return await response.json() as PersistentProxyJobResponse
 }
 
 async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {

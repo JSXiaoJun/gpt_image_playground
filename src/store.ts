@@ -45,7 +45,7 @@ import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
-import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
+import { IMAGE_FETCH_CORS_HINT, MIME_MAP, isDataUrl, isHttpUrl, normalizeBase64Image, type CallApiResult } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
@@ -56,7 +56,7 @@ import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
 import { OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
-import { hasPersistentProxyJob, readPersistentProxyJob } from './lib/persistentProxyFetch'
+import { hasPersistentProxyJob, readPersistentProxyJob, type PersistentProxyJobResponse } from './lib/persistentProxyFetch'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -2156,6 +2156,121 @@ function schedulePersistentProxyRecovery(taskId: string, delay = PERSISTENT_PROX
   persistentProxyRecoveryTimers.set(taskId, timer)
 }
 
+function parsePersistentProxyJobResult(task: TaskRecord, job: PersistentProxyJobResponse): CallApiResult | null {
+  if (!job.response?.body) return null
+
+  const payload = JSON.parse(job.response.body) as Record<string, unknown>
+  const fallbackMime = MIME_MAP[task.params.output_format] || 'image/png'
+  const images: string[] = []
+  const rawImageUrls: string[] = []
+  const revisedPrompts: Array<string | undefined> = []
+
+  const data = Array.isArray(payload.data) ? payload.data : []
+  for (const item of data) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    if (typeof record.b64_json === 'string' && record.b64_json.trim()) {
+      images.push(normalizeBase64Image(record.b64_json, fallbackMime))
+      revisedPrompts.push(typeof record.revised_prompt === 'string' ? record.revised_prompt : undefined)
+      continue
+    }
+    if (isDataUrl(record.url)) {
+      images.push(record.url)
+      revisedPrompts.push(typeof record.revised_prompt === 'string' ? record.revised_prompt : undefined)
+      continue
+    }
+    if (isHttpUrl(record.url)) {
+      rawImageUrls.push(record.url)
+      revisedPrompts.push(typeof record.revised_prompt === 'string' ? record.revised_prompt : undefined)
+    }
+  }
+
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const content = (candidate as Record<string, unknown>).content
+    if (!content || typeof content !== 'object') continue
+    const rawParts = (content as Record<string, unknown>).parts
+    const parts = Array.isArray(rawParts) ? rawParts : []
+    for (const part of parts) {
+      if (!part || typeof part !== 'object') continue
+      const inlineData = (part as Record<string, unknown>).inlineData
+      if (!inlineData || typeof inlineData !== 'object') continue
+      const inlineRecord = inlineData as Record<string, unknown>
+      if (typeof inlineRecord.data === 'string' && inlineRecord.data.trim()) {
+        images.push(normalizeBase64Image(inlineRecord.data, typeof inlineRecord.mimeType === 'string' ? inlineRecord.mimeType : fallbackMime))
+      }
+    }
+  }
+
+  if (!images.length && !rawImageUrls.length) return null
+
+  const actualParams = {
+    size: task.params.size,
+    output_format: task.params.output_format,
+    n: images.length || rawImageUrls.length,
+  }
+  return {
+    images,
+    actualParams,
+    actualParamsList: Array.from({ length: images.length }, () => actualParams),
+    revisedPrompts,
+    ...(rawImageUrls.length ? { rawImageUrls } : {}),
+  }
+}
+
+async function completePersistentProxyTaskFromJob(task: TaskRecord, job: PersistentProxyJobResponse) {
+  const result = parsePersistentProxyJobResult(task, job)
+  if (!result) {
+    updateTaskInStore(task.id, {
+      status: 'error',
+      error: '任务代理已完成，但响应里没有可识别的图片数据。',
+      rawResponsePayload: job.response?.body,
+      falRecoverable: false,
+      customRecoverable: false,
+      finishedAt: Date.now(),
+      elapsed: Date.now() - task.createdAt,
+    })
+    return
+  }
+
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
+  const actualParams = {
+    ...result.actualParams,
+    size: result.actualParams?.size ?? firstActualParams(actualParamsList)?.size,
+    n: outputIds.length || result.rawImageUrls?.length,
+  }
+  const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
+  const revisedPromptByImage = result.revisedPrompts?.reduce<Record<string, string>>((acc, revisedPrompt, index) => {
+    const imgId = outputIds[index]
+    if (imgId && revisedPrompt && revisedPrompt.trim()) acc[imgId] = revisedPrompt
+    return acc
+  }, {})
+
+  clearOpenAIWatchdogTimer(task.id)
+  clearPersistentProxyRecoveryTimer(task.id)
+  useStore.getState().setTaskStreamPreview(task.id)
+  updateTaskInStore(task.id, {
+    outputImages: outputIds,
+    transparentOriginalImages: transparentOriginalImageIds,
+    streamPartialImageIds: undefined,
+    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
+    rawResponsePayload: job.response?.body,
+    actualParams,
+    actualParamsByImage,
+    revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
+    status: 'done',
+    error: null,
+    finishedAt: Date.now(),
+    elapsed: Date.now() - task.createdAt,
+    apiElapsed: job.upstreamElapsedMs ?? undefined,
+    falRecoverable: false,
+    customRecoverable: false,
+  })
+  void deleteUnreferencedImageIds(task.streamPartialImageIds || [])
+}
+
 async function recoverPersistentProxyTask(taskId: string) {
   const task = useStore.getState().tasks.find((item) => item.id === taskId)
   if (!task || !isRunningOpenAITask(task) || task.customTaskId || task.falRequestId || task.falEndpoint) {
@@ -2184,7 +2299,7 @@ async function recoverPersistentProxyTask(taskId: string) {
   }
 
   if (job.status === 'done') {
-    await executeTask(taskId, true)
+    await completePersistentProxyTaskFromJob(task, job)
     if (useStore.getState().tasks.some((item) => item.id === taskId && item.status === 'running')) {
       schedulePersistentProxyRecovery(taskId)
     }
