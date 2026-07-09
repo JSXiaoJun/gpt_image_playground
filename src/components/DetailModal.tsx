@@ -34,6 +34,7 @@ export default function DetailModal() {
   const [imageIndex, setImageIndex] = useState(0)
   const [imageSrcs, setImageSrcs] = useState<Record<string, string>>({})
   const [outputPreviewSrcs, setOutputPreviewSrcs] = useState<Record<string, string>>({})
+  const [outputPreviewErrors, setOutputPreviewErrors] = useState<Record<string, boolean>>({})
   const [imageRatios, setImageRatios] = useState<Record<string, string>>({})
   const [imageSizes, setImageSizes] = useState<Record<string, string>>({})
   const [maskPreviewSrc, setMaskPreviewSrc] = useState('')
@@ -119,6 +120,7 @@ export default function DetailModal() {
     if (!task) {
       setImageSrcs({})
       setOutputPreviewSrcs({})
+      setOutputPreviewErrors({})
       setImageRatios({})
       setImageSizes({})
       return
@@ -187,6 +189,7 @@ export default function DetailModal() {
   const currentOutputError = currentOutputSlot?.error || ''
   const currentOriginalOutputImageId = currentOutputImageIndex >= 0 ? task?.transparentOriginalImages?.[currentOutputImageIndex] || '' : ''
   const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || currentOutputDisplayRawUrl : currentOutputDisplayRawUrl
+  const currentOutputPreviewError = currentOutputPreviewSrc ? outputPreviewErrors[currentOutputPreviewSrc] : false
 
   useEffect(() => {
     const outputImageIds = task?.outputImages ?? []
@@ -519,9 +522,15 @@ export default function DetailModal() {
               <img
                 src={currentOutputPreviewSrc}
                 data-image-id={currentOutputImageId}
-                className="saveable-image max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] object-contain cursor-pointer"
+                className={`saveable-image max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] object-contain cursor-pointer ${currentOutputPreviewError ? 'opacity-0' : ''}`}
                 onLoad={(e) => {
                   const image = e.currentTarget
+                  setOutputPreviewErrors((prev) => {
+                    if (!prev[currentOutputPreviewSrc]) return prev
+                    const next = { ...prev }
+                    delete next[currentOutputPreviewSrc]
+                    return next
+                  })
                   if (currentImageKey && image.naturalWidth > 0 && image.naturalHeight > 0) {
                     setImageRatios((prev) => ({
                       ...prev,
@@ -533,6 +542,9 @@ export default function DetailModal() {
                     }))
                   }
                 }}
+                onError={() => {
+                  setOutputPreviewErrors((prev) => ({ ...prev, [currentOutputPreviewSrc]: true }))
+                }}
                 onClick={() => {
                   if (currentOutputImageId) {
                     setLightboxImageId(currentOutputImageId, task.outputImages)
@@ -542,6 +554,19 @@ export default function DetailModal() {
                 }}
                 alt=""
               />
+              {currentOutputPreviewError && (
+                <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
+                  <div className="max-w-sm rounded-2xl bg-white/85 p-4 shadow-sm ring-1 ring-black/5 dark:bg-gray-900/80 dark:ring-white/10">
+                    <svg className="mx-auto mb-2 h-10 w-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="text-sm font-medium text-red-500">图片链接加载失败</p>
+                    <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                      上游返回了图片地址，但该地址无法访问或已经过期。请重新生成，或检查 NewAPI 返回的图片 URL 是否可直接打开。
+                    </p>
+                  </div>
+                </div>
+              )}
               <div data-selectable-text className="absolute left-4 top-[15px] flex items-center gap-1.5">
                 {currentImageRatio && currentImageSize ? (
                   <>
@@ -552,7 +577,7 @@ export default function DetailModal() {
                       {currentImageSize}
                     </span>
                   </>
-                ) : (
+                ) : !currentOutputPreviewError ? (
                   formatDuration() && (
                     <span className="flex items-center gap-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded backdrop-blur-sm font-mono">
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -561,7 +586,7 @@ export default function DetailModal() {
                       {formatDuration()}
                     </span>
                   )
-                )}
+                ) : null}
               </div>
               {outputLen > 1 && (
                 <>

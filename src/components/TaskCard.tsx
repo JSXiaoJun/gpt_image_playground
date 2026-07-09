@@ -497,6 +497,7 @@ export default function TaskCard({
                 data-output-image-ids={task.outputImages.join(',')}
                 className="saveable-image w-full h-full object-cover"
                 loading="lazy"
+                onError={() => setThumbSrc('')}
                 alt=""
               />
               {(hasPartialOutputFailure || task.outputImages.length > 1) && (
