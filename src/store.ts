@@ -77,6 +77,7 @@ const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
 const PERSISTENT_PROXY_RECOVERY_POLL_MS = 2_000
+const PERSISTENT_PROXY_MISSING_JOB_GRACE_MS = 60_000
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
@@ -85,6 +86,7 @@ const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const persistentProxyRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const persistentProxyRecoveryTaskIds = new Set<string>()
+const persistentProxyCompletionTaskIds = new Set<string>()
 const taskExecutionStartedAtById = new Map<string, number>()
 const taskCompletionIds = new Set<string>()
 let persistentProxyRecoveryScanner: ReturnType<typeof setInterval> | null = null
@@ -2156,10 +2158,17 @@ function schedulePersistentProxyRecovery(taskId: string, delay = PERSISTENT_PROX
   persistentProxyRecoveryTimers.set(taskId, timer)
 }
 
-function parsePersistentProxyJobResult(task: TaskRecord, job: PersistentProxyJobResponse): CallApiResult | null {
-  if (!job.response?.body) return null
+function parsePersistentProxyResponseBody(body: unknown): Record<string, unknown> | null {
+  if (!body) return null
+  if (typeof body === 'string') return JSON.parse(body) as Record<string, unknown>
+  if (typeof body === 'object') return body as Record<string, unknown>
+  return null
+}
 
-  const payload = JSON.parse(job.response.body) as Record<string, unknown>
+function parsePersistentProxyJobResult(task: TaskRecord, job: PersistentProxyJobResponse): CallApiResult | null {
+  const payload = parsePersistentProxyResponseBody(job.response?.body)
+  if (!payload) return null
+
   const fallbackMime = MIME_MAP[task.params.output_format] || 'image/png'
   const images: string[] = []
   const rawImageUrls: string[] = []
@@ -2220,55 +2229,81 @@ function parsePersistentProxyJobResult(task: TaskRecord, job: PersistentProxyJob
 }
 
 async function completePersistentProxyTaskFromJob(task: TaskRecord, job: PersistentProxyJobResponse) {
-  const result = parsePersistentProxyJobResult(task, job)
-  if (!result) {
+  if (taskCompletionIds.has(task.id) || persistentProxyCompletionTaskIds.has(task.id)) return
+  persistentProxyCompletionTaskIds.add(task.id)
+
+  try {
+    const result = parsePersistentProxyJobResult(task, job)
+    if (!result) {
+      clearOpenAIWatchdogTimer(task.id)
+      clearPersistentProxyRecoveryTimer(task.id)
+      useStore.getState().setTaskStreamPreview(task.id)
+      updateTaskInStore(task.id, {
+        status: 'error',
+        error: '任务代理已完成，但响应里没有可识别的图片数据。',
+        rawResponsePayload: typeof job.response?.body === 'string' ? job.response.body : JSON.stringify(job.response?.body ?? null),
+        falRecoverable: false,
+        customRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      return
+    }
+
+    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+    const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
+    const actualParams = {
+      ...result.actualParams,
+      size: result.actualParams?.size ?? firstActualParams(actualParamsList)?.size,
+      n: outputIds.length || result.rawImageUrls?.length,
+    }
+    const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
+    const revisedPromptByImage = result.revisedPrompts?.reduce<Record<string, string>>((acc, revisedPrompt, index) => {
+      const imgId = outputIds[index]
+      if (imgId && revisedPrompt && revisedPrompt.trim()) acc[imgId] = revisedPrompt
+      return acc
+    }, {})
+
+    clearOpenAIWatchdogTimer(task.id)
+    clearPersistentProxyRecoveryTimer(task.id)
+    useStore.getState().setTaskStreamPreview(task.id)
+    updateTaskInStore(task.id, {
+      outputImages: outputIds,
+      transparentOriginalImages: transparentOriginalImageIds,
+      streamPartialImageIds: undefined,
+      rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
+      rawResponsePayload: typeof job.response?.body === 'string' ? job.response.body : JSON.stringify(job.response?.body ?? null),
+      actualParams,
+      actualParamsByImage,
+      revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
+      status: 'done',
+      error: null,
+      finishedAt: Date.now(),
+      elapsed: Date.now() - task.createdAt,
+      apiElapsed: job.upstreamElapsedMs ?? undefined,
+      falRecoverable: false,
+      customRecoverable: false,
+    })
+    void deleteUnreferencedImageIds(task.streamPartialImageIds || [])
+  } catch (err) {
+    clearOpenAIWatchdogTimer(task.id)
+    clearPersistentProxyRecoveryTimer(task.id)
+    useStore.getState().setTaskStreamPreview(task.id)
+    const message = err instanceof Error ? err.message : String(err)
+    const rawErrorPayload = getRawErrorPayload(err)
     updateTaskInStore(task.id, {
       status: 'error',
-      error: '任务代理已完成，但响应里没有可识别的图片数据。',
-      rawResponsePayload: job.response?.body,
+      error: message || '任务代理结果处理失败',
+      ...rawErrorPayload,
+      rawResponsePayload: rawErrorPayload.rawResponsePayload ?? (typeof job.response?.body === 'string' ? job.response.body : JSON.stringify(job.response?.body ?? null)),
       falRecoverable: false,
       customRecoverable: false,
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
     })
-    return
+  } finally {
+    persistentProxyCompletionTaskIds.delete(task.id)
   }
-
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
-  const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
-  const actualParams = {
-    ...result.actualParams,
-    size: result.actualParams?.size ?? firstActualParams(actualParamsList)?.size,
-    n: outputIds.length || result.rawImageUrls?.length,
-  }
-  const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-  const revisedPromptByImage = result.revisedPrompts?.reduce<Record<string, string>>((acc, revisedPrompt, index) => {
-    const imgId = outputIds[index]
-    if (imgId && revisedPrompt && revisedPrompt.trim()) acc[imgId] = revisedPrompt
-    return acc
-  }, {})
-
-  clearOpenAIWatchdogTimer(task.id)
-  clearPersistentProxyRecoveryTimer(task.id)
-  useStore.getState().setTaskStreamPreview(task.id)
-  updateTaskInStore(task.id, {
-    outputImages: outputIds,
-    transparentOriginalImages: transparentOriginalImageIds,
-    streamPartialImageIds: undefined,
-    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
-    rawResponsePayload: job.response?.body,
-    actualParams,
-    actualParamsByImage,
-    revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
-    status: 'done',
-    error: null,
-    finishedAt: Date.now(),
-    elapsed: Date.now() - task.createdAt,
-    apiElapsed: job.upstreamElapsedMs ?? undefined,
-    falRecoverable: false,
-    customRecoverable: false,
-  })
-  void deleteUnreferencedImageIds(task.streamPartialImageIds || [])
 }
 
 async function recoverPersistentProxyTask(taskId: string) {
@@ -2281,6 +2316,24 @@ async function recoverPersistentProxyTask(taskId: string) {
 
   const job = await readPersistentProxyJob(taskId).catch(() => null)
   if (!job) {
+    if (
+      task.status === 'running' &&
+      !taskExecutionStartedAtById.has(taskId) &&
+      Date.now() - task.createdAt > PERSISTENT_PROXY_MISSING_JOB_GRACE_MS
+    ) {
+      clearOpenAIWatchdogTimer(taskId)
+      clearPersistentProxyRecoveryTimer(taskId)
+      useStore.getState().setTaskStreamPreview(taskId)
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: '任务代理记录不存在，可能是页面连接到了另一个服务实例、容器重启，或任务没有成功提交到后端。请重新生成。',
+        falRecoverable: false,
+        customRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      return
+    }
     schedulePersistentProxyRecovery(taskId)
     return
   }
@@ -2324,7 +2377,10 @@ async function scanPersistentProxyRunningTasks() {
       )
     const checks = await Promise.all(candidates.map(async (task) => ({
       id: task.id,
-      hasJob: persistentProxyRecoveryTaskIds.has(task.id) || await hasPersistentProxyJob(task.id),
+      hasJob:
+        persistentProxyRecoveryTaskIds.has(task.id) ||
+        (task.status === 'running' && !taskExecutionStartedAtById.has(task.id) && Date.now() - task.createdAt > PERSISTENT_PROXY_MISSING_JOB_GRACE_MS) ||
+        await hasPersistentProxyJob(task.id),
     })))
     const taskIds = checks.filter((item) => item.hasJob).map((item) => item.id)
     await Promise.all(taskIds.map((taskId) => recoverPersistentProxyTask(taskId)))
@@ -4984,7 +5040,7 @@ async function executeTask(taskId: string, allowTakeover = false) {
       useStore.getState().setTaskStreamPreview(taskId)
       return
     }
-    if (taskCompletionIds.has(taskId)) return
+    if (taskCompletionIds.has(taskId) || persistentProxyCompletionTaskIds.has(taskId)) return
     taskCompletionIds.add(taskId)
 
     // 存储输出图片
