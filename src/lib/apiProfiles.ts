@@ -21,7 +21,7 @@ import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
 
 const LEGACY_OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1'
-const OPENAI_DEFAULT_BASE_URL = 'https://zl.yyapi.cloud/v1'
+const OPENAI_DEFAULT_BASE_URL = 'https://www.yyapi.cloud/v1'
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
 const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true'
 const DOCKER_DEPLOYMENT = readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT) === 'true'
@@ -342,7 +342,6 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     ...overrides,
     baseUrl: normalizeOpenAIBaseUrl(overrides.baseUrl),
     apiMode,
-    responseFormatB64Json: apiMode === 'images' ? true : undefined,
     streamImages,
   }
 }
@@ -469,7 +468,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     apiMode: nextApiMode,
     codexCli: savedDraft?.codexCli ?? profile.codexCli,
     apiProxy: savedDraft?.apiProxy ?? DEFAULT_OPENAI_API_PROXY,
-    responseFormatB64Json: nextApiMode === 'images' ? true : undefined,
+    responseFormatB64Json: savedDraft?.responseFormatB64Json,
     streamImages: nextStreamImages,
     streamPartialImages: nextStreamPartialImages,
     providerDrafts,
@@ -501,7 +500,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
-    responseFormatB64Json: provider === 'openai' && apiMode !== 'responses' ? true : input.responseFormatB64Json === true ? true : undefined,
+    responseFormatB64Json: provider === 'openai' ? undefined : input.responseFormatB64Json === true ? true : undefined,
     streamImages: typeof input.streamImages === 'boolean' ? input.streamImages : fallback.streamImages,
     streamPartialImages: normalizeStreamPartialImages(input.streamPartialImages, fallback.streamPartialImages),
   }
@@ -547,7 +546,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     apiMode,
     codexCli: Boolean(record.codexCli),
     apiProxy: provider === 'gemini' ? false : typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
-    responseFormatB64Json: provider === 'openai' && apiMode === 'images' ? true : record.responseFormatB64Json === true ? true : undefined,
+    responseFormatB64Json: provider === 'openai' ? undefined : record.responseFormatB64Json === true ? true : undefined,
     streamImages,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, defaults.streamPartialImages),
     providerDrafts: normalizeProviderDrafts(record.providerDrafts, customProviderIds),
@@ -580,7 +579,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     apiMode: legacyApiMode,
     codexCli: Boolean(record.codexCli),
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : DEFAULT_OPENAI_API_PROXY,
-    responseFormatB64Json: legacyApiMode === 'images' ? true : record.responseFormatB64Json === true ? true : undefined,
+    responseFormatB64Json: undefined,
     streamImages: typeof record.streamImages === 'boolean' ? record.streamImages : undefined,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages),
   })

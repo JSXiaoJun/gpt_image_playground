@@ -9,7 +9,7 @@ const DEFAULT_DEV_PROXY_CONFIG = {
   enabled: true,
   locked: true,
   prefix: '/api-proxy',
-  target: 'https://zl.yyapi.cloud',
+  target: 'https://www.yyapi.cloud',
   changeOrigin: true,
   secure: true,
 }
@@ -80,14 +80,15 @@ async function inlineImageUrlsInResponseBody(body: string) {
   try {
     payload = JSON.parse(body)
   } catch {
-    return { body, count: 0 }
+    return { body, count: 0, urlCount: 0 }
   }
 
   if (!payload || typeof payload !== 'object' || !Array.isArray(payload.data)) {
-    return { body, count: 0 }
+    return { body, count: 0, urlCount: 0 }
   }
 
   let count = 0
+  const urlItems = payload.data.filter((item: any) => item && typeof item === 'object' && !item.b64_json && isHttpUrl(item.url))
   await Promise.all(payload.data.map(async (item: any) => {
     if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
     try {
@@ -107,7 +108,7 @@ async function inlineImageUrlsInResponseBody(body: string) {
     }
   }))
 
-  return { body: count > 0 ? JSON.stringify(payload) : body, count }
+  return { body: count > 0 ? JSON.stringify(payload) : body, count, urlCount: urlItems.length }
 }
 
 function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyConfig>) {
@@ -169,14 +170,17 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
         const rawBody = await response.text()
         const inlineResult = response.ok
           ? await inlineImageUrlsInResponseBody(rawBody)
-          : { body: rawBody, count: 0 }
+          : { body: rawBody, count: 0, urlCount: 0 }
         const body = inlineResult.body
         if (inlineResult.count > 0) console.log(`job ${id} inlined ${inlineResult.count} image url(s)`)
-        job.status = response.ok ? 'done' : 'error'
+        const imageUrlFailed = response.ok && inlineResult.urlCount > 0 && inlineResult.count === 0
+        job.status = response.ok && !imageUrlFailed ? 'done' : 'error'
         job.upstreamStatus = response.status
         job.upstreamElapsedMs = Date.now() - startedAt
         job.response = { status: response.status, headers, body }
-        job.error = response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
+        job.error = imageUrlFailed
+          ? '上游接口只返回了图片 URL，但该 URL 无法下载或已经失效。请检查 NewAPI 的图片存储配置，或改用可稳定返回图片数据的上游地址。'
+          : response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
         job.updatedAt = Date.now()
       })
       .catch((error) => {

@@ -31,7 +31,7 @@ function readBody(req) {
 }
 
 function getProxyBaseUrl() {
-  const raw = process.env.API_PROXY_URL || process.env.API_URL || 'https://zl.yyapi.cloud'
+  const raw = process.env.API_PROXY_URL || process.env.API_URL || 'https://www.yyapi.cloud'
   const input = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(raw) ? raw : `https://${raw}`
   const url = new URL(input)
   const pathname = url.pathname.replace(/\/+$/, '')
@@ -78,14 +78,15 @@ async function inlineImageUrlsInResponseBody(body) {
   try {
     payload = JSON.parse(body)
   } catch {
-    return { body, count: 0 }
+    return { body, count: 0, urlCount: 0 }
   }
 
   if (!payload || typeof payload !== 'object' || !Array.isArray(payload.data)) {
-    return { body, count: 0 }
+    return { body, count: 0, urlCount: 0 }
   }
 
   let count = 0
+  const urlItems = payload.data.filter((item) => item && typeof item === 'object' && !item.b64_json && isHttpUrl(item.url))
   await Promise.all(payload.data.map(async (item) => {
     if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
     try {
@@ -105,7 +106,7 @@ async function inlineImageUrlsInResponseBody(body) {
     }
   }))
 
-  return { body: count > 0 ? JSON.stringify(payload) : body, count }
+  return { body: count > 0 ? JSON.stringify(payload) : body, count, urlCount: urlItems.length }
 }
 
 function publicJob(job) {
@@ -204,7 +205,7 @@ function startJob(id, payload) {
       const rawResponseBody = await response.text()
       const inlineResult = response.ok
         ? await inlineImageUrlsInResponseBody(rawResponseBody)
-        : { body: rawResponseBody, count: 0 }
+        : { body: rawResponseBody, count: 0, urlCount: 0 }
       const responseBody = inlineResult.body
       if (inlineResult.count > 0) console.log(`job ${id} inlined ${inlineResult.count} image url(s)`)
       job.responseBytes = Buffer.byteLength(responseBody, 'utf8')
@@ -214,9 +215,12 @@ function startJob(id, payload) {
         body: responseBody,
       }
       if (upstreamTimeout) clearTimeout(upstreamTimeout)
-      job.status = response.ok ? 'done' : 'error'
-      job.phase = response.ok ? 'done' : 'error'
-      job.error = response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
+      const imageUrlFailed = response.ok && inlineResult.urlCount > 0 && inlineResult.count === 0
+      job.status = response.ok && !imageUrlFailed ? 'done' : 'error'
+      job.phase = response.ok && !imageUrlFailed ? 'done' : 'error'
+      job.error = imageUrlFailed
+        ? '上游接口只返回了图片 URL，但该 URL 无法下载或已经失效。请检查 NewAPI 的图片存储配置，或改用可稳定返回图片数据的上游地址。'
+        : response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
       job.updatedAt = Date.now()
       console.log(`job ${id} ${job.status}: HTTP ${response.status}, ${job.responseBytes} bytes`)
     })
