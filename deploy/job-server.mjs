@@ -183,12 +183,16 @@ function startJob(id, payload) {
   const body = method === 'GET' || method === 'HEAD'
     ? undefined
     : typeof payload.body === 'string' ? payload.body : undefined
+  const payloadTimeoutMs = Number(payload.timeoutMs)
+  const effectiveUpstreamTimeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0
+    ? Math.max(30 * 1000, payloadTimeoutMs)
+    : upstreamTimeoutMs
 
   console.log(`job ${id} started: ${method} ${targetUrl}`)
-  const upstreamTimeout = upstreamTimeoutMs > 0
+  const upstreamTimeout = effectiveUpstreamTimeoutMs > 0
     ? setTimeout(() => {
-        controller.abort(new Error(`上游请求超过 ${Math.round(upstreamTimeoutMs / 1000)} 秒仍未返回`))
-      }, upstreamTimeoutMs)
+        controller.abort(new Error(`上游请求超过 ${Math.round(effectiveUpstreamTimeoutMs / 1000)} 秒仍未返回`))
+      }, effectiveUpstreamTimeoutMs)
     : null
 
   fetch(targetUrl, {
@@ -266,6 +270,17 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && req.url?.startsWith('/image-proxy?')) {
       await proxyImage(req, res)
+      return
+    }
+
+    if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
+      sendJson(res, 200, {
+        ok: true,
+        version: '0.6.38',
+        imageInlineTimeoutMs,
+        upstreamTimeoutMs,
+        runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
+      })
       return
     }
 

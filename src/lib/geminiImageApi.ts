@@ -183,7 +183,7 @@ async function callGeminiImageApiSingle(opts: CallApiOptions, profile: ApiProfil
         },
       }),
       signal: controller.signal,
-    }, opts.taskId)
+    }, opts.taskId, profile.timeout)
 
     if (!response.ok) throw new Error(await getApiErrorMessage(response))
     const result = extractGeminiImages(await response.json() as GeminiResponse, fallbackMime)

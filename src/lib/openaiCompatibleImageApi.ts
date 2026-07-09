@@ -635,7 +635,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         cache: 'no-store',
         body: formData,
         signal: controller.signal,
-      }, opts.taskId)
+      }, opts.taskId, profile.timeout)
     } else {
       const body: Record<string, unknown> = {
         model: profile.model,
@@ -672,7 +672,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         cache: 'no-store',
         body: JSON.stringify(body),
         signal: controller.signal,
-      }, opts.taskId)
+      }, opts.taskId, profile.timeout)
     }
 
     if (!response.ok) {
@@ -1080,7 +1080,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       cache: 'no-store',
       body: JSON.stringify(body),
       signal: controller.signal,
-    }, opts.taskId)
+    }, opts.taskId, profile.timeout)
 
     if (!response.ok) {
       const errorMessage = await getApiErrorMessage(response)

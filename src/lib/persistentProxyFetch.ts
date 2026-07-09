@@ -106,7 +106,7 @@ async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
   }
 }
 
-export async function fetchWithPersistentProxy(url: string, init: RequestInit, jobId?: string) {
+export async function fetchWithPersistentProxy(url: string, init: RequestInit, jobId?: string, timeoutSeconds?: number) {
   if (!canUsePersistentProxyJob(url, init, jobId)) return fetch(url, init)
   const persistentProxyUrl = getPersistentProxyUrl(url)
   if (!persistentProxyUrl) return fetch(url, init)
@@ -116,6 +116,9 @@ export async function fetchWithPersistentProxy(url: string, init: RequestInit, j
     method: init.method ?? 'POST',
     headers: headersToRecord(init.headers),
     body: typeof init.body === 'string' ? init.body : '',
+    timeoutMs: typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds)
+      ? Math.max(30_000, timeoutSeconds * 1000)
+      : undefined,
   })
   const response = await fetch(`/api-jobs/${encodeURIComponent(jobId!)}`, {
     method: 'POST',

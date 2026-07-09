@@ -147,6 +147,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
 
   const startJob = (id: string, payload: any) => {
     const startedAt = Date.now()
+    const controller = new AbortController()
     const job = {
       id,
       status: 'running' as const,
@@ -160,12 +161,18 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     jobs.set(id, job)
 
     const method = String(payload.method || 'POST').toUpperCase()
+    const payloadTimeoutMs = Number(payload.timeoutMs)
+    const timeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0 ? Math.max(30_000, payloadTimeoutMs) : 0
+    const timeout = timeoutMs > 0
+      ? setTimeout(() => controller.abort(new Error(`上游请求超过 ${Math.round(timeoutMs / 1000)} 秒仍未返回`)), timeoutMs)
+      : null
     fetch(buildTargetUrl(String(payload.url || '')), {
       method,
       headers: payload.headers || {},
       body: method === 'GET' || method === 'HEAD'
         ? undefined
         : typeof payload.body === 'string' ? payload.body : undefined,
+      signal: controller.signal,
     })
       .then(async (response) => {
         const headers: Record<string, string> = {}
@@ -191,11 +198,24 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
         job.error = error instanceof Error ? error.message : String(error)
         job.updatedAt = Date.now()
       })
+      .finally(() => {
+        if (timeout) clearTimeout(timeout)
+      })
 
     return job
   }
 
   return async (req: any, res: any, next: () => void) => {
+    if (req.url?.startsWith('/api-jobs-health')) {
+      sendJson(res, 200, {
+        ok: true,
+        version: '0.6.38',
+        imageInlineTimeoutMs: IMAGE_INLINE_TIMEOUT_MS,
+        runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
+      })
+      return
+    }
+
     if (!req.url?.startsWith('/api-jobs/')) {
       next()
       return
