@@ -9,7 +9,7 @@ const DEFAULT_DEV_PROXY_CONFIG = {
   enabled: true,
   locked: true,
   prefix: '/api-proxy',
-  target: 'https://www.yyapi.cloud',
+  target: 'https://zl.yyapi.cloud',
   changeOrigin: true,
   secure: true,
 }

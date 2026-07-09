@@ -21,7 +21,7 @@ import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
 
 const LEGACY_OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1'
-const OPENAI_DEFAULT_BASE_URL = 'https://www.yyapi.cloud/v1'
+const OPENAI_DEFAULT_BASE_URL = 'https://zl.yyapi.cloud/v1'
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
 const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true'
 const DOCKER_DEPLOYMENT = readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT) === 'true'

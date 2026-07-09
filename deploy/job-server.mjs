@@ -31,7 +31,7 @@ function readBody(req) {
 }
 
 function getProxyBaseUrl() {
-  const raw = process.env.API_PROXY_URL || process.env.API_URL || 'https://api.openai.com'
+  const raw = process.env.API_PROXY_URL || process.env.API_URL || 'https://zl.yyapi.cloud'
   const input = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(raw) ? raw : `https://${raw}`
   const url = new URL(input)
   const pathname = url.pathname.replace(/\/+$/, '')
