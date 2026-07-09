@@ -342,6 +342,7 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     ...overrides,
     baseUrl: normalizeOpenAIBaseUrl(overrides.baseUrl),
     apiMode,
+    responseFormatB64Json: apiMode === 'images' ? true : undefined,
     streamImages,
   }
 }
@@ -468,7 +469,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     apiMode: nextApiMode,
     codexCli: savedDraft?.codexCli ?? profile.codexCli,
     apiProxy: savedDraft?.apiProxy ?? DEFAULT_OPENAI_API_PROXY,
-    responseFormatB64Json: savedDraft?.responseFormatB64Json,
+    responseFormatB64Json: nextApiMode === 'images' ? true : undefined,
     streamImages: nextStreamImages,
     streamPartialImages: nextStreamPartialImages,
     providerDrafts,
@@ -500,7 +501,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
-    responseFormatB64Json: input.responseFormatB64Json === true ? true : undefined,
+    responseFormatB64Json: provider === 'openai' && apiMode !== 'responses' ? true : input.responseFormatB64Json === true ? true : undefined,
     streamImages: typeof input.streamImages === 'boolean' ? input.streamImages : fallback.streamImages,
     streamPartialImages: normalizeStreamPartialImages(input.streamPartialImages, fallback.streamPartialImages),
   }
@@ -546,7 +547,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     apiMode,
     codexCli: Boolean(record.codexCli),
     apiProxy: provider === 'gemini' ? false : typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
-    responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
+    responseFormatB64Json: provider === 'openai' && apiMode === 'images' ? true : record.responseFormatB64Json === true ? true : undefined,
     streamImages,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, defaults.streamPartialImages),
     providerDrafts: normalizeProviderDrafts(record.providerDrafts, customProviderIds),
@@ -579,7 +580,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     apiMode: legacyApiMode,
     codexCli: Boolean(record.codexCli),
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : DEFAULT_OPENAI_API_PROXY,
-    responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
+    responseFormatB64Json: legacyApiMode === 'images' ? true : record.responseFormatB64Json === true ? true : undefined,
     streamImages: typeof record.streamImages === 'boolean' ? record.streamImages : undefined,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages),
   })
