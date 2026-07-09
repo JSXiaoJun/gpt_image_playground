@@ -43,6 +43,8 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     updatedAt: number
     response: { status: number; headers: Record<string, string>; body: string } | null
     error: string | null
+    upstreamStatus?: number | null
+    upstreamElapsedMs?: number | null
   }>()
 
   const sendJson = (res: any, status: number, data: unknown) => {
@@ -62,13 +64,16 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
   }
 
   const startJob = (id: string, payload: any) => {
+    const startedAt = Date.now()
     const job = {
       id,
       status: 'running' as const,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: startedAt,
+      updatedAt: startedAt,
       response: null,
       error: null,
+      upstreamStatus: null,
+      upstreamElapsedMs: null,
     }
     jobs.set(id, job)
 
@@ -86,8 +91,12 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
           if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
           headers[key] = value
         })
-        job.status = 'done'
-        job.response = { status: response.status, headers, body: await response.text() }
+        const body = await response.text()
+        job.status = response.ok ? 'done' : 'error'
+        job.upstreamStatus = response.status
+        job.upstreamElapsedMs = Date.now() - startedAt
+        job.response = { status: response.status, headers, body }
+        job.error = response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
         job.updatedAt = Date.now()
       })
       .catch((error) => {

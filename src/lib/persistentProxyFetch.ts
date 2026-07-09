@@ -1,4 +1,4 @@
-import { isApiProxyAvailable } from './devProxy'
+import { isApiProxyAvailable, readClientDevProxyConfig } from './devProxy'
 import { readRuntimeEnv } from './runtimeEnv'
 
 export interface PersistentProxyJobResponse {
@@ -26,6 +26,21 @@ function canReachPersistentProxyJobServer() {
   return isDockerDeployment() || import.meta.env.DEV
 }
 
+function getPersistentProxyUrl(url: string) {
+  if (url.startsWith('/api-proxy/')) return url
+  if (!isApiProxyAvailable()) return null
+
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null
+    if (!/^\/v\d+(?:beta)?\//.test(parsed.pathname)) return null
+    const prefix = readClientDevProxyConfig()?.prefix ?? '/api-proxy'
+    return `${prefix}${parsed.pathname}${parsed.search}`
+  } catch {
+    return null
+  }
+}
+
 function canUsePersistentProxyJob(url: string, init: RequestInit, jobId?: string) {
   const method = (init.method ?? 'GET').toUpperCase()
   return Boolean(
@@ -33,7 +48,7 @@ function canUsePersistentProxyJob(url: string, init: RequestInit, jobId?: string
     canReachPersistentProxyJobServer() &&
     isApiProxyAvailable() &&
     method === 'POST' &&
-    url.startsWith('/api-proxy/') &&
+    getPersistentProxyUrl(url) &&
     (typeof init.body === 'string' || init.body == null),
   )
 }
@@ -93,9 +108,11 @@ async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
 
 export async function fetchWithPersistentProxy(url: string, init: RequestInit, jobId?: string) {
   if (!canUsePersistentProxyJob(url, init, jobId)) return fetch(url, init)
+  const persistentProxyUrl = getPersistentProxyUrl(url)
+  if (!persistentProxyUrl) return fetch(url, init)
 
   const jobPayload = JSON.stringify({
-    url,
+    url: persistentProxyUrl,
     method: init.method ?? 'POST',
     headers: headersToRecord(init.headers),
     body: typeof init.body === 'string' ? init.body : '',
