@@ -65,6 +65,51 @@ async function proxyDevImage(req: any, res: any) {
   res.end(body)
 }
 
+function isHttpUrl(value: unknown) {
+  if (typeof value !== 'string') return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+async function inlineImageUrlsInResponseBody(body: string) {
+  let payload: any
+  try {
+    payload = JSON.parse(body)
+  } catch {
+    return { body, count: 0 }
+  }
+
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.data)) {
+    return { body, count: 0 }
+  }
+
+  let count = 0
+  await Promise.all(payload.data.map(async (item: any) => {
+    if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
+    try {
+      const response = await fetch(item.url, {
+        headers: {
+          accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'user-agent': 'gpt-image-playground-image-proxy/1.0',
+        },
+      })
+      if (!response.ok) return
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.toLowerCase().startsWith('image/')) return
+      item.b64_json = Buffer.from(await response.arrayBuffer()).toString('base64')
+      count += 1
+    } catch (error) {
+      console.warn(`inline image url failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }))
+
+  return { body: count > 0 ? JSON.stringify(payload) : body, count }
+}
+
 function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyConfig>) {
   const jobs = new Map<string, {
     id: string
@@ -121,7 +166,12 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
           if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
           headers[key] = value
         })
-        const body = await response.text()
+        const rawBody = await response.text()
+        const inlineResult = response.ok
+          ? await inlineImageUrlsInResponseBody(rawBody)
+          : { body: rawBody, count: 0 }
+        const body = inlineResult.body
+        if (inlineResult.count > 0) console.log(`job ${id} inlined ${inlineResult.count} image url(s)`)
         job.status = response.ok ? 'done' : 'error'
         job.upstreamStatus = response.status
         job.upstreamElapsedMs = Date.now() - startedAt

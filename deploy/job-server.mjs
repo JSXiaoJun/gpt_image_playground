@@ -63,6 +63,51 @@ function normalizeHeaders(input) {
   return headers
 }
 
+function isHttpUrl(value) {
+  if (typeof value !== 'string') return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+async function inlineImageUrlsInResponseBody(body) {
+  let payload
+  try {
+    payload = JSON.parse(body)
+  } catch {
+    return { body, count: 0 }
+  }
+
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.data)) {
+    return { body, count: 0 }
+  }
+
+  let count = 0
+  await Promise.all(payload.data.map(async (item) => {
+    if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
+    try {
+      const response = await fetch(item.url, {
+        headers: {
+          accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'user-agent': 'gpt-image-playground-image-proxy/1.0',
+        },
+      })
+      if (!response.ok) return
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.toLowerCase().startsWith('image/')) return
+      item.b64_json = Buffer.from(await response.arrayBuffer()).toString('base64')
+      count += 1
+    } catch (err) {
+      console.warn(`inline image url failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }))
+
+  return { body: count > 0 ? JSON.stringify(payload) : body, count }
+}
+
 function publicJob(job) {
   return {
     id: job.id,
@@ -156,7 +201,12 @@ function startJob(id, payload) {
         if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
         responseHeaders[key] = value
       })
-      const responseBody = await response.text()
+      const rawResponseBody = await response.text()
+      const inlineResult = response.ok
+        ? await inlineImageUrlsInResponseBody(rawResponseBody)
+        : { body: rawResponseBody, count: 0 }
+      const responseBody = inlineResult.body
+      if (inlineResult.count > 0) console.log(`job ${id} inlined ${inlineResult.count} image url(s)`)
       job.responseBytes = Buffer.byteLength(responseBody, 'utf8')
       job.response = {
         status: response.status,
