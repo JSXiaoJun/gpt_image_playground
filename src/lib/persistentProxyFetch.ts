@@ -1,4 +1,5 @@
 import { isApiProxyAvailable, readClientDevProxyConfig } from './devProxy'
+import { addJobLog } from './jobLogs'
 import { readRuntimeEnv } from './runtimeEnv'
 
 export interface PersistentProxyJobResponse {
@@ -80,8 +81,22 @@ function wait(ms: number, signal?: AbortSignal) {
 
 export async function readPersistentProxyJob(jobId: string) {
   const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store' })
-  if (!response.ok) return null
-  return await response.json() as PersistentProxyJobResponse
+  if (!response.ok) {
+    addJobLog('warn', 'frontend:job-read', '任务代理记录读取失败', { jobId, status: response.status })
+    return null
+  }
+  const job = await response.json() as PersistentProxyJobResponse
+  addJobLog('debug', 'frontend:job-read', '任务代理状态', {
+    jobId,
+    status: job.status,
+    phase: job.phase,
+    upstreamStatus: job.upstreamStatus,
+    upstreamElapsedMs: job.upstreamElapsedMs,
+    responseBytes: job.responseBytes,
+    hasResponse: Boolean(job.response),
+    error: job.error,
+  })
+  return job
 }
 
 async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
@@ -92,6 +107,13 @@ async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
     if (job.status === 'done') {
       const response = job.response
       if (!response) throw new Error('任务代理没有返回响应')
+      addJobLog('info', 'frontend:job-poll', '任务代理完成', {
+        jobId,
+        status: response.status,
+        upstreamStatus: job.upstreamStatus,
+        upstreamElapsedMs: job.upstreamElapsedMs,
+        responseBytes: job.responseBytes,
+      })
       return new Response(response.body, {
         status: response.status,
         headers: response.headers,
@@ -99,6 +121,7 @@ async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
     }
 
     if (job.status === 'error') {
+      addJobLog('error', 'frontend:job-poll', '任务代理失败', { jobId, error: job.error })
       throw new Error(job.error || '任务代理请求失败')
     }
 
@@ -120,6 +143,13 @@ export async function fetchWithPersistentProxy(url: string, init: RequestInit, j
       ? Math.max(30_000, timeoutSeconds * 1000)
       : undefined,
   })
+  addJobLog('info', 'frontend:job-start', '提交任务代理', {
+    jobId,
+    url: persistentProxyUrl,
+    method: init.method ?? 'POST',
+    bodyLength: typeof init.body === 'string' ? init.body.length : 0,
+    timeoutSeconds,
+  })
   const response = await fetch(`/api-jobs/${encodeURIComponent(jobId!)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -129,8 +159,10 @@ export async function fetchWithPersistentProxy(url: string, init: RequestInit, j
 
   if (!response.ok) {
     const text = await response.text().catch(() => '')
+    addJobLog('error', 'frontend:job-start', '任务代理启动失败', { jobId, status: response.status, body: text })
     throw new Error(text || `任务代理启动失败：${response.status}`)
   }
+  addJobLog('info', 'frontend:job-start', '任务代理已启动', { jobId, status: response.status })
 
   // 持久化任务由后端 job-server 接管，前端的请求超时只应该中断普通直连请求。
   // 这里不能传 init.signal，否则超过接口配置的 timeout 后会把仍在后台运行的任务误标失败。

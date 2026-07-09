@@ -5,8 +5,9 @@ import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import ViewportTooltip from './ViewportTooltip'
 import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
+import JobLogsModal from './JobLogsModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
-import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
+import { CodeIcon, EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -86,7 +87,9 @@ export default function Header() {
 
   const installTooltip = useTooltip()
   const helpTooltip = useTooltip()
+  const logsTooltip = useTooltip()
   const settingsTooltip = useTooltip()
+  const [showJobLogs, setShowJobLogs] = useState(false)
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
@@ -273,6 +276,24 @@ export default function Header() {
             </div>
             <div
               className="relative"
+              {...logsTooltip.handlers}
+            >
+              <button
+                onClick={() => {
+                  dismissAllTooltips()
+                  setShowJobLogs(true)
+                }}
+                className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 transition-colors"
+                aria-label="运行日志"
+              >
+                <CodeIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+              </button>
+              <ViewportTooltip visible={logsTooltip.visible} className="whitespace-nowrap">
+                运行日志
+              </ViewportTooltip>
+            </div>
+            <div
+              className="relative"
               {...settingsTooltip.handlers}
             >
               <button
@@ -326,6 +347,7 @@ export default function Header() {
         </div>
       </div>
       {showHelp && <HelpModal appMode={appMode} isFavoriteCollectionOverview={appMode === 'gallery' && filterFavorite && !activeFavoriteCollectionId} onClose={() => setShowHelp(false)} />}
+      {showJobLogs && <JobLogsModal onClose={() => setShowJobLogs(false)} />}
     </>
   )
 }

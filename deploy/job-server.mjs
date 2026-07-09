@@ -12,6 +12,24 @@ const upstreamTimeoutMs = Number.isFinite(normalizedUpstreamTimeoutMs) && normal
   : 0
 const imageInlineTimeoutMs = 8_000
 const jobs = new Map()
+const serverLogs = []
+
+function addServerLog(level, source, message, data = {}) {
+  const entry = {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    time: new Date().toISOString(),
+    level,
+    source,
+    message,
+    data,
+  }
+  serverLogs.push(entry)
+  while (serverLogs.length > 1000) serverLogs.shift()
+  const line = `[${entry.time}] [${level}] [${source}] ${message} ${JSON.stringify(data)}`
+  if (level === 'error') console.error(line)
+  else if (level === 'warn') console.warn(line)
+  else console.log(line)
+}
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data)
@@ -105,8 +123,8 @@ async function inlineImageUrlsInResponseBody(body) {
       if (!contentType.toLowerCase().startsWith('image/')) return
       item.b64_json = Buffer.from(await response.arrayBuffer()).toString('base64')
       count += 1
-    } catch (err) {
-      console.warn(`inline image url failed: ${err instanceof Error ? err.message : String(err)}`)
+  } catch (err) {
+      addServerLog('warn', 'server:inline-url', '图片 URL 内联失败', { error: err instanceof Error ? err.message : String(err), url: item.url })
     } finally {
       clearTimeout(timer)
     }
@@ -188,7 +206,7 @@ function startJob(id, payload) {
     ? Math.max(30 * 1000, payloadTimeoutMs)
     : upstreamTimeoutMs
 
-  console.log(`job ${id} started: ${method} ${targetUrl}`)
+  addServerLog('info', 'server:job', '任务开始', { id, method, targetUrl, timeoutMs: effectiveUpstreamTimeoutMs })
   const upstreamTimeout = effectiveUpstreamTimeoutMs > 0
     ? setTimeout(() => {
         controller.abort(new Error(`上游请求超过 ${Math.round(effectiveUpstreamTimeoutMs / 1000)} 秒仍未返回`))
@@ -206,7 +224,7 @@ function startJob(id, payload) {
       job.upstreamStatus = response.status
       job.upstreamElapsedMs = Date.now() - now
       job.updatedAt = Date.now()
-      console.log(`job ${id} response received: HTTP ${response.status}, ${job.upstreamElapsedMs}ms`)
+      addServerLog('info', 'server:job', '上游响应头已返回', { id, status: response.status, upstreamElapsedMs: job.upstreamElapsedMs })
       const responseHeaders = {}
       response.headers.forEach((value, key) => {
         if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
@@ -217,7 +235,7 @@ function startJob(id, payload) {
         ? await inlineImageUrlsInResponseBody(rawResponseBody)
         : { body: rawResponseBody, count: 0, urlCount: 0 }
       const responseBody = inlineResult.body
-      if (inlineResult.count > 0) console.log(`job ${id} inlined ${inlineResult.count} image url(s)`)
+      if (inlineResult.count > 0) addServerLog('info', 'server:job', '图片 URL 已内联', { id, count: inlineResult.count })
       job.responseBytes = Buffer.byteLength(responseBody, 'utf8')
       job.response = {
         status: response.status,
@@ -229,7 +247,13 @@ function startJob(id, payload) {
       job.phase = response.ok ? 'done' : 'error'
       job.error = response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
       job.updatedAt = Date.now()
-      console.log(`job ${id} ${job.status}: HTTP ${response.status}, ${job.responseBytes} bytes`)
+      addServerLog(job.status === 'done' ? 'info' : 'error', 'server:job', '任务结束', {
+        id,
+        status: job.status,
+        upstreamStatus: response.status,
+        responseBytes: job.responseBytes,
+        error: job.error,
+      })
     })
     .catch((err) => {
       if (upstreamTimeout) clearTimeout(upstreamTimeout)
@@ -241,7 +265,7 @@ function startJob(id, payload) {
         ? abortReason.message
         : err instanceof Error ? err.message : String(err)
       job.updatedAt = Date.now()
-      console.error(`job ${id} error: ${job.error}`)
+      addServerLog('error', 'server:job', '任务异常', { id, error: job.error })
     })
 
   return job
@@ -276,10 +300,18 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.39',
+        version: '0.6.40',
         imageInlineTimeoutMs,
         upstreamTimeoutMs,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
+      })
+      return
+    }
+
+    if (req.method === 'GET' && req.url?.startsWith('/api-jobs-logs')) {
+      sendJson(res, 200, {
+        ok: true,
+        logs: serverLogs,
       })
       return
     }

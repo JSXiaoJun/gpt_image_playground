@@ -57,6 +57,7 @@ import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
 import { OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
 import { hasPersistentProxyJob, readPersistentProxyJob, type PersistentProxyJobResponse } from './lib/persistentProxyFetch'
+import { addJobLog } from './lib/jobLogs'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -2234,8 +2235,19 @@ async function completePersistentProxyTaskFromJob(task: TaskRecord, job: Persist
   persistentProxyCompletionTaskIds.add(task.id)
 
   try {
+    addJobLog('info', 'store:job-complete', '开始处理任务代理结果', {
+      taskId: task.id,
+      jobStatus: job.status,
+      upstreamStatus: job.upstreamStatus,
+      upstreamElapsedMs: job.upstreamElapsedMs,
+      responseBytes: job.responseBytes,
+    })
     const result = parsePersistentProxyJobResult(task, job)
     if (!result) {
+      addJobLog('error', 'store:job-complete', '任务代理结果没有可识别图片', {
+        taskId: task.id,
+        bodyLength: typeof job.response?.body === 'string' ? job.response.body.length : 0,
+      })
       clearOpenAIWatchdogTimer(task.id)
       clearPersistentProxyRecoveryTimer(task.id)
       useStore.getState().setTaskStreamPreview(task.id)
@@ -2252,6 +2264,11 @@ async function completePersistentProxyTaskFromJob(task: TaskRecord, job: Persist
     }
 
     const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+    addJobLog('info', 'store:job-complete', '任务代理图片已写入本地数据库', {
+      taskId: task.id,
+      imageCount: outputIds.length,
+      rawImageUrlCount: result.rawImageUrls?.length ?? 0,
+    })
     const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
     const actualParams = {
       ...result.actualParams,
@@ -2292,6 +2309,11 @@ async function completePersistentProxyTaskFromJob(task: TaskRecord, job: Persist
     useStore.getState().setTaskStreamPreview(task.id)
     const message = err instanceof Error ? err.message : String(err)
     const rawErrorPayload = getRawErrorPayload(err)
+    addJobLog('error', 'store:job-complete', '任务代理结果处理异常', {
+      taskId: task.id,
+      error: message,
+      bodyLength: typeof job.response?.body === 'string' ? job.response.body.length : 0,
+    })
     updateTaskInStore(task.id, {
       status: 'error',
       error: message || '任务代理结果处理失败',
@@ -2325,6 +2347,7 @@ async function recoverPersistentProxyTask(taskId: string) {
       clearOpenAIWatchdogTimer(taskId)
       clearPersistentProxyRecoveryTimer(taskId)
       useStore.getState().setTaskStreamPreview(taskId)
+      addJobLog('error', 'store:job-recover', '任务代理记录不存在，结束转圈', { taskId, ageMs: Date.now() - task.createdAt })
       updateTaskInStore(taskId, {
         status: 'error',
         error: '任务代理记录不存在，可能是页面连接到了另一个服务实例、容器重启，或任务没有成功提交到后端。请重新生成。',
@@ -2342,6 +2365,7 @@ async function recoverPersistentProxyTask(taskId: string) {
   if (job.status === 'error') {
     clearOpenAIWatchdogTimer(taskId)
     clearPersistentProxyRecoveryTimer(taskId)
+    addJobLog('error', 'store:job-recover', '恢复轮询读到任务代理失败', { taskId, error: job.error })
     updateTaskInStore(taskId, {
       status: 'error',
       error: job.error || '任务代理请求失败',
@@ -2354,6 +2378,12 @@ async function recoverPersistentProxyTask(taskId: string) {
   }
 
   if (job.status === 'done') {
+    addJobLog('info', 'store:job-recover', '恢复轮询读到任务代理完成', {
+      taskId,
+      upstreamStatus: job.upstreamStatus,
+      upstreamElapsedMs: job.upstreamElapsedMs,
+      responseBytes: job.responseBytes,
+    })
     await completePersistentProxyTaskFromJob(task, job)
     if (useStore.getState().tasks.some((item) => item.id === taskId && item.status === 'running')) {
       schedulePersistentProxyRecovery(taskId)

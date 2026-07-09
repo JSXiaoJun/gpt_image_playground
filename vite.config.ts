@@ -5,6 +5,19 @@ import { normalizeDevProxyConfig } from './src/lib/devProxy'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const IMAGE_INLINE_TIMEOUT_MS = 8_000
+const devJobLogs: Array<{ id: string; time: string; level: string; source: string; message: string; data?: unknown }> = []
+
+function addDevJobLog(level: string, source: string, message: string, data?: unknown) {
+  devJobLogs.push({
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    time: new Date().toISOString(),
+    level,
+    source,
+    message,
+    data,
+  })
+  while (devJobLogs.length > 1000) devJobLogs.shift()
+}
 
 const DEFAULT_DEV_PROXY_CONFIG = {
   enabled: true,
@@ -108,7 +121,7 @@ async function inlineImageUrlsInResponseBody(body: string) {
       item.b64_json = Buffer.from(await response.arrayBuffer()).toString('base64')
       count += 1
     } catch (error) {
-      console.warn(`inline image url failed: ${error instanceof Error ? error.message : String(error)}`)
+      addDevJobLog('warn', 'dev:inline-url', '图片 URL 内联失败', { error: error instanceof Error ? error.message : String(error), url: item.url })
     } finally {
       clearTimeout(timer)
     }
@@ -166,6 +179,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     const timeout = timeoutMs > 0
       ? setTimeout(() => controller.abort(new Error(`上游请求超过 ${Math.round(timeoutMs / 1000)} 秒仍未返回`)), timeoutMs)
       : null
+    addDevJobLog('info', 'dev:job', '任务开始', { id, method, timeoutMs })
     fetch(buildTargetUrl(String(payload.url || '')), {
       method,
       headers: payload.headers || {},
@@ -185,18 +199,26 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
           ? await inlineImageUrlsInResponseBody(rawBody)
           : { body: rawBody, count: 0, urlCount: 0 }
         const body = inlineResult.body
-        if (inlineResult.count > 0) console.log(`job ${id} inlined ${inlineResult.count} image url(s)`)
+        if (inlineResult.count > 0) addDevJobLog('info', 'dev:job', '图片 URL 已内联', { id, count: inlineResult.count })
         job.status = response.ok ? 'done' : 'error'
         job.upstreamStatus = response.status
         job.upstreamElapsedMs = Date.now() - startedAt
         job.response = { status: response.status, headers, body }
         job.error = response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
         job.updatedAt = Date.now()
+        addDevJobLog(response.ok ? 'info' : 'error', 'dev:job', '任务结束', {
+          id,
+          status: job.status,
+          upstreamStatus: response.status,
+          upstreamElapsedMs: job.upstreamElapsedMs,
+          error: job.error,
+        })
       })
       .catch((error) => {
         job.status = 'error'
         job.error = error instanceof Error ? error.message : String(error)
         job.updatedAt = Date.now()
+        addDevJobLog('error', 'dev:job', '任务异常', { id, error: job.error })
       })
       .finally(() => {
         if (timeout) clearTimeout(timeout)
@@ -209,10 +231,15 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.39',
+        version: '0.6.40',
         imageInlineTimeoutMs: IMAGE_INLINE_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
       })
+      return
+    }
+
+    if (req.url?.startsWith('/api-jobs-logs')) {
+      sendJson(res, 200, { ok: true, logs: devJobLogs })
       return
     }
 
