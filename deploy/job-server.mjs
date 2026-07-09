@@ -10,6 +10,7 @@ const normalizedUpstreamTimeoutMs = rawUpstreamTimeout > 0 && rawUpstreamTimeout
 const upstreamTimeoutMs = Number.isFinite(normalizedUpstreamTimeoutMs) && normalizedUpstreamTimeoutMs > 0
   ? Math.max(30 * 1000, normalizedUpstreamTimeoutMs)
   : 0
+const imageInlineTimeoutMs = 8_000
 const jobs = new Map()
 
 function sendJson(res, status, data) {
@@ -89,12 +90,15 @@ async function inlineImageUrlsInResponseBody(body) {
   const urlItems = payload.data.filter((item) => item && typeof item === 'object' && !item.b64_json && isHttpUrl(item.url))
   await Promise.all(payload.data.map(async (item) => {
     if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('image url inline timeout')), imageInlineTimeoutMs)
     try {
       const response = await fetch(item.url, {
         headers: {
           accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
           'user-agent': 'gpt-image-playground-image-proxy/1.0',
         },
+        signal: controller.signal,
       })
       if (!response.ok) return
       const contentType = response.headers.get('content-type') || ''
@@ -103,6 +107,8 @@ async function inlineImageUrlsInResponseBody(body) {
       count += 1
     } catch (err) {
       console.warn(`inline image url failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      clearTimeout(timer)
     }
   }))
 
@@ -215,12 +221,9 @@ function startJob(id, payload) {
         body: responseBody,
       }
       if (upstreamTimeout) clearTimeout(upstreamTimeout)
-      const imageUrlFailed = response.ok && inlineResult.urlCount > 0 && inlineResult.count === 0
-      job.status = response.ok && !imageUrlFailed ? 'done' : 'error'
-      job.phase = response.ok && !imageUrlFailed ? 'done' : 'error'
-      job.error = imageUrlFailed
-        ? '上游接口只返回了图片 URL，但该 URL 无法下载或已经失效。请检查 NewAPI 的图片存储配置，或改用可稳定返回图片数据的上游地址。'
-        : response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
+      job.status = response.ok ? 'done' : 'error'
+      job.phase = response.ok ? 'done' : 'error'
+      job.error = response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
       job.updatedAt = Date.now()
       console.log(`job ${id} ${job.status}: HTTP ${response.status}, ${job.responseBytes} bytes`)
     })

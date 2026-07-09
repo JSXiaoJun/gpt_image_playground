@@ -4,6 +4,7 @@ import { readFileSync } from 'fs'
 import { normalizeDevProxyConfig } from './src/lib/devProxy'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
+const IMAGE_INLINE_TIMEOUT_MS = 8_000
 
 const DEFAULT_DEV_PROXY_CONFIG = {
   enabled: true,
@@ -91,12 +92,15 @@ async function inlineImageUrlsInResponseBody(body: string) {
   const urlItems = payload.data.filter((item: any) => item && typeof item === 'object' && !item.b64_json && isHttpUrl(item.url))
   await Promise.all(payload.data.map(async (item: any) => {
     if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('image url inline timeout')), IMAGE_INLINE_TIMEOUT_MS)
     try {
       const response = await fetch(item.url, {
         headers: {
           accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
           'user-agent': 'gpt-image-playground-image-proxy/1.0',
         },
+        signal: controller.signal,
       })
       if (!response.ok) return
       const contentType = response.headers.get('content-type') || ''
@@ -105,6 +109,8 @@ async function inlineImageUrlsInResponseBody(body: string) {
       count += 1
     } catch (error) {
       console.warn(`inline image url failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      clearTimeout(timer)
     }
   }))
 
@@ -173,14 +179,11 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
           : { body: rawBody, count: 0, urlCount: 0 }
         const body = inlineResult.body
         if (inlineResult.count > 0) console.log(`job ${id} inlined ${inlineResult.count} image url(s)`)
-        const imageUrlFailed = response.ok && inlineResult.urlCount > 0 && inlineResult.count === 0
-        job.status = response.ok && !imageUrlFailed ? 'done' : 'error'
+        job.status = response.ok ? 'done' : 'error'
         job.upstreamStatus = response.status
         job.upstreamElapsedMs = Date.now() - startedAt
         job.response = { status: response.status, headers, body }
-        job.error = imageUrlFailed
-          ? '上游接口只返回了图片 URL，但该 URL 无法下载或已经失效。请检查 NewAPI 的图片存储配置，或改用可稳定返回图片数据的上游地址。'
-          : response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
+        job.error = response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
         job.updatedAt = Date.now()
       })
       .catch((error) => {
