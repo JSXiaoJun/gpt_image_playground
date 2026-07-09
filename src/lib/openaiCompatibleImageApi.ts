@@ -593,7 +593,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       if (params.n > 1) {
         formData.append('n', String(params.n))
       }
-      if (profile.responseFormatB64Json) {
+      if (!profile.streamImages || profile.responseFormatB64Json) {
         formData.append('response_format', 'b64_json')
       }
       if (profile.streamImages) {
@@ -655,7 +655,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       if (params.n > 1) {
         body.n = params.n
       }
-      if (profile.responseFormatB64Json) {
+      if (!profile.streamImages || profile.responseFormatB64Json) {
         body.response_format = 'b64_json'
       }
       if (profile.streamImages) {
