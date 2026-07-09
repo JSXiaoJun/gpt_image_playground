@@ -2314,16 +2314,19 @@ async function scanPersistentProxyRunningTasks() {
   if (persistentProxyRecoveryScanRunning) return
   persistentProxyRecoveryScanRunning = true
   try {
-    const taskIds = useStore.getState().tasks
+    const candidates = useStore.getState().tasks
       .filter((task) =>
-        persistentProxyRecoveryTaskIds.has(task.id) &&
         isOpenAITask(task) &&
         (task.status === 'running' || (task.status === 'error' && task.error?.includes('请求超时'))) &&
         !task.customTaskId &&
         !task.falRequestId &&
         !task.falEndpoint,
       )
-      .map((task) => task.id)
+    const checks = await Promise.all(candidates.map(async (task) => ({
+      id: task.id,
+      hasJob: persistentProxyRecoveryTaskIds.has(task.id) || await hasPersistentProxyJob(task.id),
+    })))
+    const taskIds = checks.filter((item) => item.hasJob).map((item) => item.id)
     await Promise.all(taskIds.map((taskId) => recoverPersistentProxyTask(taskId)))
   } finally {
     persistentProxyRecoveryScanRunning = false
@@ -2410,8 +2413,8 @@ export async function initStore() {
   showSupportPromptForExistingLocalData(tasks)
   for (const task of tasks) {
     if (resumablePersistentTaskIds.has(task.id)) {
-      if (task.status === 'running') executeTask(task.id)
       schedulePersistentProxyRecovery(task.id)
+      if (task.status === 'running') executeTask(task.id)
     }
     if (
       task.apiProvider === 'fal' &&
@@ -2690,8 +2693,8 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   // 异步调用 API
   startPersistentProxyRecoveryScanner()
-  executeTask(taskId)
   schedulePersistentProxyRecovery(taskId)
+  executeTask(taskId)
 }
 
 function getActiveAgentConversation(): AgentConversation {
@@ -5359,8 +5362,8 @@ export async function retryTask(task: TaskRecord) {
   await putTask(newTask)
 
   startPersistentProxyRecoveryScanner()
-  executeTask(taskId)
   schedulePersistentProxyRecovery(taskId)
+  executeTask(taskId)
 }
 
 /** 复用配置 */
