@@ -89,6 +89,7 @@ const persistentProxyRecoveryTaskIds = new Set<string>()
 const persistentProxyCompletionTaskIds = new Set<string>()
 const taskExecutionStartedAtById = new Map<string, number>()
 const taskCompletionIds = new Set<string>()
+let submitTaskRunning = false
 let persistentProxyRecoveryScanner: ReturnType<typeof setInterval> | null = null
 let persistentProxyRecoveryScanRunning = false
 const agentRoundControllers = new Map<string, AbortController>()
@@ -2470,7 +2471,6 @@ export async function initStore() {
   for (const task of tasks) {
     if (resumablePersistentTaskIds.has(task.id)) {
       schedulePersistentProxyRecovery(task.id)
-      if (task.status === 'running') executeTask(task.id)
     }
     if (
       task.apiProvider === 'fal' &&
@@ -2623,6 +2623,9 @@ export async function initStore() {
 
 /** 提交新任务 */
 export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
+  if (submitTaskRunning) return
+  submitTaskRunning = true
+  try {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
     useStore.getState()
 
@@ -2751,6 +2754,9 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   startPersistentProxyRecoveryScanner()
   schedulePersistentProxyRecovery(taskId)
   executeTask(taskId)
+  } finally {
+    submitTaskRunning = false
+  }
 }
 
 function getActiveAgentConversation(): AgentConversation {
