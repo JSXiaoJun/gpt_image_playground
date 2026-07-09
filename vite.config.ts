@@ -5,6 +5,7 @@ import { normalizeDevProxyConfig } from './src/lib/devProxy'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const IMAGE_INLINE_TIMEOUT_MS = 8_000
+const JOB_PENDING_TIMEOUT_MS = 180_000
 const devJobLogs: Array<{ id: string; time: string; level: string; source: string; message: string; data?: unknown }> = []
 
 function addDevJobLog(level: string, source: string, message: string, data?: unknown) {
@@ -174,21 +175,49 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     jobs.set(id, job)
 
     const method = String(payload.method || 'POST').toUpperCase()
+    const body = method === 'GET' || method === 'HEAD'
+      ? undefined
+      : typeof payload.body === 'string' ? payload.body : undefined
+    let requestSummary: Record<string, unknown> = {}
+    try {
+      const parsedBody = body ? JSON.parse(body) : {}
+      requestSummary = {
+        model: parsedBody.model,
+        size: parsedBody.size,
+        quality: parsedBody.quality,
+        n: parsedBody.n,
+        stream: parsedBody.stream,
+        response_format: parsedBody.response_format,
+        promptLength: typeof parsedBody.prompt === 'string' ? parsedBody.prompt.length : undefined,
+      }
+    } catch {
+      requestSummary = { bodyLength: body?.length ?? 0 }
+    }
     const payloadTimeoutMs = Number(payload.timeoutMs)
     const timeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0 ? Math.max(30_000, payloadTimeoutMs) : 0
     const timeout = timeoutMs > 0
       ? setTimeout(() => controller.abort(new Error(`上游请求超过 ${Math.round(timeoutMs / 1000)} 秒仍未返回`)), timeoutMs)
       : null
-    addDevJobLog('info', 'dev:job', '任务开始', { id, method, timeoutMs })
+    const pendingTimeout = setTimeout(() => {
+      controller.abort(new Error(`上游请求已提交，但 ${Math.round(JOB_PENDING_TIMEOUT_MS / 1000)} 秒内没有返回 HTTP 响应头。NewAPI 后台可能已生成/扣费，但当前 HTTP 连接没有把结果返回给本服务。任务 ID：${id}`))
+    }, JOB_PENDING_TIMEOUT_MS)
+    const heartbeat = setInterval(() => {
+      if (job.status !== 'running') return
+      addDevJobLog('debug', 'dev:job', '任务仍在等待上游响应', {
+        id,
+        elapsedMs: Date.now() - startedAt,
+        upstreamStatus: job.upstreamStatus,
+      })
+    }, 30_000)
+    addDevJobLog('info', 'dev:job', '任务开始', { id, method, timeoutMs, pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS, request: requestSummary })
     fetch(buildTargetUrl(String(payload.url || '')), {
       method,
       headers: payload.headers || {},
-      body: method === 'GET' || method === 'HEAD'
-        ? undefined
-        : typeof payload.body === 'string' ? payload.body : undefined,
+      body,
       signal: controller.signal,
     })
       .then(async (response) => {
+        clearTimeout(pendingTimeout)
         const headers: Record<string, string> = {}
         response.headers.forEach((value, key) => {
           if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
@@ -222,6 +251,8 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
       })
       .finally(() => {
         if (timeout) clearTimeout(timeout)
+        clearTimeout(pendingTimeout)
+        clearInterval(heartbeat)
       })
 
     return job
@@ -231,8 +262,9 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.40',
+        version: '0.6.41',
         imageInlineTimeoutMs: IMAGE_INLINE_TIMEOUT_MS,
+        pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
       })
       return

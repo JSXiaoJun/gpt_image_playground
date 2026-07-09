@@ -10,6 +10,11 @@ const normalizedUpstreamTimeoutMs = rawUpstreamTimeout > 0 && rawUpstreamTimeout
 const upstreamTimeoutMs = Number.isFinite(normalizedUpstreamTimeoutMs) && normalizedUpstreamTimeoutMs > 0
   ? Math.max(30 * 1000, normalizedUpstreamTimeoutMs)
   : 0
+const rawPendingTimeout = Number(process.env.JOB_PENDING_TIMEOUT_MS || 180 * 1000)
+const normalizedPendingTimeoutMs = rawPendingTimeout > 0 && rawPendingTimeout < 10_000 ? rawPendingTimeout * 1000 : rawPendingTimeout
+const pendingTimeoutMs = Number.isFinite(normalizedPendingTimeoutMs) && normalizedPendingTimeoutMs > 0
+  ? Math.max(30 * 1000, normalizedPendingTimeoutMs)
+  : 0
 const imageInlineTimeoutMs = 8_000
 const jobs = new Map()
 const serverLogs = []
@@ -201,17 +206,47 @@ function startJob(id, payload) {
   const body = method === 'GET' || method === 'HEAD'
     ? undefined
     : typeof payload.body === 'string' ? payload.body : undefined
+  let requestSummary = {}
+  try {
+    const parsedBody = body ? JSON.parse(body) : {}
+    requestSummary = {
+      model: parsedBody.model,
+      size: parsedBody.size,
+      quality: parsedBody.quality,
+      n: parsedBody.n,
+      stream: parsedBody.stream,
+      response_format: parsedBody.response_format,
+      promptLength: typeof parsedBody.prompt === 'string' ? parsedBody.prompt.length : undefined,
+    }
+  } catch {
+    requestSummary = { bodyLength: body?.length ?? 0 }
+  }
   const payloadTimeoutMs = Number(payload.timeoutMs)
   const effectiveUpstreamTimeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0
     ? Math.max(30 * 1000, payloadTimeoutMs)
     : upstreamTimeoutMs
 
-  addServerLog('info', 'server:job', '任务开始', { id, method, targetUrl, timeoutMs: effectiveUpstreamTimeoutMs })
+  addServerLog('info', 'server:job', '任务开始', { id, method, targetUrl, timeoutMs: effectiveUpstreamTimeoutMs, pendingTimeoutMs, request: requestSummary })
   const upstreamTimeout = effectiveUpstreamTimeoutMs > 0
     ? setTimeout(() => {
         controller.abort(new Error(`上游请求超过 ${Math.round(effectiveUpstreamTimeoutMs / 1000)} 秒仍未返回`))
       }, effectiveUpstreamTimeoutMs)
     : null
+  const pendingTimeout = pendingTimeoutMs > 0
+    ? setTimeout(() => {
+        if (job.phase !== 'pending') return
+        controller.abort(new Error(`上游请求已提交，但 ${Math.round(pendingTimeoutMs / 1000)} 秒内没有返回 HTTP 响应头。NewAPI 后台可能已生成/扣费，但当前 HTTP 连接没有把结果返回给本服务。任务 ID：${id}`))
+      }, pendingTimeoutMs)
+    : null
+  const heartbeat = setInterval(() => {
+    if (job.status !== 'running') return
+    addServerLog('debug', 'server:job', '任务仍在等待上游响应', {
+      id,
+      phase: job.phase,
+      elapsedMs: Date.now() - now,
+      upstreamStatus: job.upstreamStatus,
+    })
+  }, 30 * 1000)
 
   fetch(targetUrl, {
     method,
@@ -224,6 +259,7 @@ function startJob(id, payload) {
       job.upstreamStatus = response.status
       job.upstreamElapsedMs = Date.now() - now
       job.updatedAt = Date.now()
+      if (pendingTimeout) clearTimeout(pendingTimeout)
       addServerLog('info', 'server:job', '上游响应头已返回', { id, status: response.status, upstreamElapsedMs: job.upstreamElapsedMs })
       const responseHeaders = {}
       response.headers.forEach((value, key) => {
@@ -243,6 +279,8 @@ function startJob(id, payload) {
         body: responseBody,
       }
       if (upstreamTimeout) clearTimeout(upstreamTimeout)
+      if (pendingTimeout) clearTimeout(pendingTimeout)
+      clearInterval(heartbeat)
       job.status = response.ok ? 'done' : 'error'
       job.phase = response.ok ? 'done' : 'error'
       job.error = response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
@@ -257,6 +295,8 @@ function startJob(id, payload) {
     })
     .catch((err) => {
       if (upstreamTimeout) clearTimeout(upstreamTimeout)
+      if (pendingTimeout) clearTimeout(pendingTimeout)
+      clearInterval(heartbeat)
       job.status = 'error'
       job.phase = 'error'
       job.upstreamElapsedMs = Date.now() - now
@@ -300,9 +340,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.40',
+        version: '0.6.41',
         imageInlineTimeoutMs,
         upstreamTimeoutMs,
+        pendingTimeoutMs,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
       })
       return
