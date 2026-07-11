@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpt-image-playground-v0.1.5'
+const CACHE_NAME = 'gpt-image-playground-v0.6.43'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 
 self.addEventListener('install', (event) => {
@@ -25,6 +25,16 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
 
+  // API 和显式禁用缓存的请求必须直连网络，否则任务轮询会一直读到首次缓存的 running 状态。
+  if (
+    request.cache === 'no-store' ||
+    url.pathname.startsWith('/api-jobs/') ||
+    url.pathname === '/api-jobs-health' ||
+    url.pathname === '/api-jobs-logs' ||
+    url.pathname.startsWith('/api-proxy/') ||
+    url.pathname === '/image-proxy'
+  ) return
+
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
@@ -37,6 +47,13 @@ self.addEventListener('fetch', (event) => {
     )
     return
   }
+
+  // 仅缓存构建后的静态资源和 PWA 文件，不缓存其他动态 GET 响应。
+  if (
+    !url.pathname.includes('/assets/') &&
+    !url.pathname.endsWith('/manifest.webmanifest') &&
+    !url.pathname.endsWith('/pwa-icon.svg')
+  ) return
 
   event.respondWith(
     caches.match(request).then((cached) => {

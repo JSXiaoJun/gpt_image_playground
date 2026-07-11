@@ -349,7 +349,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.42',
+        version: '0.6.43',
         imageInlineTimeoutMs,
         upstreamTimeoutMs,
         pendingTimeoutMs,
