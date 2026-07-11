@@ -198,6 +198,7 @@ function startJob(id, payload) {
     response: null,
     error: null,
     controller,
+    lastReadStatus: null,
   }
   jobs.set(id, job)
 
@@ -349,7 +350,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.43',
+        version: '0.6.44',
         imageInlineTimeoutMs,
         upstreamTimeoutMs,
         pendingTimeoutMs,
@@ -383,6 +384,16 @@ const server = http.createServer(async (req, res) => {
       if (!job) {
         sendJson(res, 404, { error: '任务不存在' })
         return
+      }
+      const readStatus = `${job.status}:${job.phase}`
+      if (job.lastReadStatus !== readStatus) {
+        job.lastReadStatus = readStatus
+        addServerLog('debug', 'server:job-read', '前端读取任务状态', {
+          id,
+          status: job.status,
+          phase: job.phase,
+          responseBytes: job.responseBytes,
+        })
       }
       sendJson(res, 200, publicJob(job))
       return
