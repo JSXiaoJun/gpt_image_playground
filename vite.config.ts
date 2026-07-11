@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { readFileSync } from 'fs'
 import { normalizeDevProxyConfig } from './src/lib/devProxy'
+import { readUpstreamResponseBody } from './deploy/read-upstream-body.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const IMAGE_INLINE_TIMEOUT_MS = 8_000
@@ -223,7 +224,15 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
           if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
           headers[key] = value
         })
-        const rawBody = await response.text()
+        const readResult = await readUpstreamResponseBody(response)
+        const rawBody = readResult.body
+        if (readResult.completedBy) {
+          addDevJobLog('info', 'dev:job', '已识别完整上游响应，无需等待连接关闭', {
+            id,
+            completedBy: readResult.completedBy,
+            responseBytes: Buffer.byteLength(rawBody, 'utf8'),
+          })
+        }
         const inlineResult = response.ok
           ? await inlineImageUrlsInResponseBody(rawBody)
           : { body: rawBody, count: 0, urlCount: 0 }
@@ -262,7 +271,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.41',
+        version: '0.6.42',
         imageInlineTimeoutMs: IMAGE_INLINE_TIMEOUT_MS,
         pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,

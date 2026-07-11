@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { readUpstreamResponseBody } from './read-upstream-body.mjs'
 
 const host = process.env.JOB_SERVER_HOST || '127.0.0.1'
 const port = Number(process.env.JOB_SERVER_PORT || 8787)
@@ -266,7 +267,15 @@ function startJob(id, payload) {
         if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
         responseHeaders[key] = value
       })
-      const rawResponseBody = await response.text()
+      const readResult = await readUpstreamResponseBody(response)
+      const rawResponseBody = readResult.body
+      if (readResult.completedBy) {
+        addServerLog('info', 'server:job', '已识别完整上游响应，无需等待连接关闭', {
+          id,
+          completedBy: readResult.completedBy,
+          responseBytes: Buffer.byteLength(rawResponseBody, 'utf8'),
+        })
+      }
       const inlineResult = response.ok
         ? await inlineImageUrlsInResponseBody(rawResponseBody)
         : { body: rawResponseBody, count: 0, urlCount: 0 }
@@ -340,7 +349,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.41',
+        version: '0.6.42',
         imageInlineTimeoutMs,
         upstreamTimeoutMs,
         pendingTimeoutMs,
