@@ -136,6 +136,7 @@ import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { hasPersistentProxyJob } from './lib/persistentProxyFetch'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
+import { OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
 import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
@@ -210,6 +211,23 @@ describe('store initialization', () => {
 
     finishCheck?.(false)
     await initPromise
+  })
+
+  it('checks interrupted tasks for an existing persistent job', async () => {
+    await clearTasks()
+    useStore.setState({ tasks: [] })
+    const interruptedTask = task({
+      id: 'interrupted-task',
+      status: 'error',
+      error: OPENAI_INTERRUPTED_ERROR,
+    })
+    await putDbTask(interruptedTask)
+    vi.mocked(hasPersistentProxyJob).mockClear()
+    vi.mocked(hasPersistentProxyJob).mockResolvedValue(false)
+
+    await initStore()
+
+    expect(hasPersistentProxyJob).toHaveBeenCalledWith(interruptedTask.id)
   })
 })
 

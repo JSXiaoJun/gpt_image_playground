@@ -55,7 +55,7 @@ import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBa
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
-import { OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
+import { isInterruptedTaskError, OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
 import { hasPersistentProxyJob, readPersistentProxyJob, type PersistentProxyJobResponse } from './lib/persistentProxyFetch'
 import { addJobLog } from './lib/jobLogs'
 
@@ -1720,6 +1720,13 @@ function isRunningOpenAITask(task: TaskRecord) {
   return task.status === 'running' && isOpenAITask(task)
 }
 
+function isPersistentProxyRecoverableTask(task: TaskRecord) {
+  return isOpenAITask(task) && (
+    task.status === 'running' ||
+    (task.status === 'error' && (task.error?.includes('请求超时') || isInterruptedTaskError(task.error)))
+  )
+}
+
 function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasInputImages: boolean) {
   const customProvider = getCustomProviderDefinition(settings, provider)
   if (!customProvider?.poll) return false
@@ -2331,7 +2338,7 @@ async function completePersistentProxyTaskFromJob(task: TaskRecord, job: Persist
 
 async function recoverPersistentProxyTask(taskId: string) {
   const task = useStore.getState().tasks.find((item) => item.id === taskId)
-  const canRecover = task && isOpenAITask(task) && (task.status === 'running' || (task.status === 'error' && task.error?.includes('请求超时')))
+  const canRecover = task && isPersistentProxyRecoverableTask(task)
   if (!task || !canRecover || task.customTaskId || task.falRequestId || task.falEndpoint) {
     clearPersistentProxyRecoveryTimer(taskId)
     return
@@ -2400,8 +2407,7 @@ async function scanPersistentProxyRunningTasks() {
   try {
     const candidates = useStore.getState().tasks
       .filter((task) =>
-        isOpenAITask(task) &&
-        (task.status === 'running' || (task.status === 'error' && task.error?.includes('请求超时'))) &&
+        isPersistentProxyRecoverableTask(task) &&
         !task.customTaskId &&
         !task.falRequestId &&
         !task.falEndpoint,
@@ -2429,8 +2435,7 @@ function startPersistentProxyRecoveryScanner() {
 
 async function getResumablePersistentProxyTaskIds(tasks: TaskRecord[]) {
   const recoverableTasks = tasks.filter((task) =>
-    isOpenAITask(task) &&
-    (task.status === 'running' || (task.status === 'error' && task.error?.includes('请求超时'))) &&
+    isPersistentProxyRecoverableTask(task) &&
     !task.customTaskId &&
     !task.falRequestId &&
     !task.falEndpoint,

@@ -271,7 +271,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.45',
+        version: '0.6.46',
         imageInlineTimeoutMs: IMAGE_INLINE_TIMEOUT_MS,
         pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
@@ -297,7 +297,8 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
 
     if (req.method === 'GET') {
       const job = jobs.get(id)
-      sendJson(res, job ? 200 : 404, job ?? { error: '任务不存在' })
+      const summaryOnly = new URL(req.url || '', 'http://127.0.0.1').searchParams.get('summary') === '1'
+      sendJson(res, job ? 200 : 404, job ? { ...job, response: summaryOnly ? null : job.response } : { error: '任务不存在' })
       return
     }
 

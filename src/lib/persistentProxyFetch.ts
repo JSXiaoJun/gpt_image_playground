@@ -80,8 +80,9 @@ function wait(ms: number, signal?: AbortSignal) {
   })
 }
 
-export async function readPersistentProxyJob(jobId: string, signal?: AbortSignal) {
-  const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store', signal })
+export async function readPersistentProxyJob(jobId: string, signal?: AbortSignal, summaryOnly = false) {
+  const query = summaryOnly ? '?summary=1' : ''
+  const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}${query}`, { cache: 'no-store', signal })
   if (!response.ok) {
     addJobLog('warn', 'frontend:job-read', '任务代理记录读取失败', { jobId, status: response.status })
     return null
@@ -175,7 +176,7 @@ export async function hasPersistentProxyJob(jobId: string) {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), JOB_EXISTENCE_CHECK_TIMEOUT_MS)
   try {
-    return Boolean(await readPersistentProxyJob(jobId, controller.signal).catch(() => null))
+    return Boolean(await readPersistentProxyJob(jobId, controller.signal, true).catch(() => null))
   } finally {
     window.clearTimeout(timer)
   }

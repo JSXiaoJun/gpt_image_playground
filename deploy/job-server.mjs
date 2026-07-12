@@ -139,7 +139,7 @@ async function inlineImageUrlsInResponseBody(body) {
   return { body: count > 0 ? JSON.stringify(payload) : body, count, urlCount: urlItems.length }
 }
 
-function publicJob(job) {
+function publicJob(job, includeResponse = true) {
   return {
     id: job.id,
     status: job.status,
@@ -149,7 +149,7 @@ function publicJob(job) {
     upstreamStatus: job.upstreamStatus,
     upstreamElapsedMs: job.upstreamElapsedMs,
     responseBytes: job.responseBytes,
-    response: job.response,
+    response: includeResponse ? job.response : null,
     error: job.error,
   }
 }
@@ -350,7 +350,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.45',
+        version: '0.6.46',
         imageInlineTimeoutMs,
         upstreamTimeoutMs,
         pendingTimeoutMs,
@@ -395,7 +395,8 @@ const server = http.createServer(async (req, res) => {
           responseBytes: job.responseBytes,
         })
       }
-      sendJson(res, 200, publicJob(job))
+      const requestUrl = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`)
+      sendJson(res, 200, publicJob(job, requestUrl.searchParams.get('summary') !== '1'))
       return
     }
 
