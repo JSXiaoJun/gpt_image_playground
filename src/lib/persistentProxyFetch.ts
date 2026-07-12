@@ -18,6 +18,7 @@ export interface PersistentProxyJobResponse {
 }
 
 const JOB_POLL_INTERVAL_MS = 1000
+const JOB_EXISTENCE_CHECK_TIMEOUT_MS = 5000
 
 function isDockerDeployment() {
   return readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT) === 'true'
@@ -79,8 +80,8 @@ function wait(ms: number, signal?: AbortSignal) {
   })
 }
 
-export async function readPersistentProxyJob(jobId: string) {
-  const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store' })
+export async function readPersistentProxyJob(jobId: string, signal?: AbortSignal) {
+  const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store', signal })
   if (!response.ok) {
     addJobLog('warn', 'frontend:job-read', '任务代理记录读取失败', { jobId, status: response.status })
     return null
@@ -171,5 +172,11 @@ export async function fetchWithPersistentProxy(url: string, init: RequestInit, j
 
 export async function hasPersistentProxyJob(jobId: string) {
   if (!canReachPersistentProxyJobServer() || !isApiProxyAvailable()) return false
-  return Boolean(await readPersistentProxyJob(jobId).catch(() => null))
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), JOB_EXISTENCE_CHECK_TIMEOUT_MS)
+  try {
+    return Boolean(await readPersistentProxyJob(jobId, controller.signal).catch(() => null))
+  } finally {
+    window.clearTimeout(timer)
+  }
 }

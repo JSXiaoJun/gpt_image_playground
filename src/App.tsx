@@ -53,6 +53,13 @@ export default function App() {
       window.history.replaceState(null, '', nextUrl)
     }
 
+    const initializeStore = () => {
+      void initStore().catch((error) => {
+        console.error('Failed to initialize local data:', error)
+        useStore.getState().showToast('本地历史数据加载失败，请刷新页面重试', 'error')
+      })
+    }
+
     if (customProviderConfigUrl && defaultConfigOnly && !customProviderConfigUrlImportStarted) {
       customProviderConfigUrlImportStarted = true
       void loadCustomProviderSettingsFromUrl(customProviderConfigUrl)
@@ -71,7 +78,7 @@ export default function App() {
           clearAppliedUrlSettings()
         })
 
-      initStore()
+      initializeStore()
       return
     }
 
@@ -94,7 +101,7 @@ export default function App() {
         })
     }
 
-    initStore()
+    initializeStore()
   }, [setSettings])
 
   useEffect(() => {

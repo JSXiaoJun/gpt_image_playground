@@ -2447,6 +2447,8 @@ export async function initStore() {
   startPersistentProxyRecoveryScanner()
   const legacyAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)
   const storedTasks = await getAllTasks()
+  useStore.getState().setTasks(storedTasks.map(getPersistableTask))
+  addJobLog('info', 'store:init', '已从本地数据库加载任务', { taskCount: storedTasks.length })
   const storedAgentConversations = normalizeAgentConversations(await getAllAgentConversations())
   let loadedAgentConversations = mergeAgentConversationsForStorage(storedAgentConversations, legacyAgentConversations)
   const currentAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)

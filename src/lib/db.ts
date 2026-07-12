@@ -46,8 +46,13 @@ function dbTransaction<T>(
         const tx = db.transaction(storeName, mode)
         const store = tx.objectStore(storeName)
         const req = fn(store)
-        req.onsuccess = () => resolve(req.result)
-        req.onerror = () => reject(req.error)
+        let result: T
+        req.onsuccess = () => {
+          result = req.result
+        }
+        tx.oncomplete = () => resolve(result)
+        tx.onerror = () => reject(tx.error ?? req.error)
+        tx.onabort = () => reject(tx.error ?? req.error)
       }),
   )
 }

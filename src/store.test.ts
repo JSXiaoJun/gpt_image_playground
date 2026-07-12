@@ -83,6 +83,10 @@ vi.mock('./lib/api', () => ({
     revisedPrompts: [],
   })),
 }))
+vi.mock('./lib/persistentProxyFetch', () => ({
+  hasPersistentProxyJob: vi.fn(async () => false),
+  readPersistentProxyJob: vi.fn(async () => null),
+}))
 vi.mock('./lib/falAiImageApi', () => ({
   getFalErrorMessage: vi.fn((err: unknown) => err instanceof Error ? err.message : String(err)),
   getFalQueuedImageResult: vi.fn(async () => ({
@@ -130,6 +134,7 @@ vi.mock('./lib/agentApi', () => ({
 import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversations, getAllTasks, getImage, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
+import { hasPersistentProxyJob } from './lib/persistentProxyFetch'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
@@ -182,6 +187,31 @@ function importFile(data: ExportData): File {
   const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength)
   return { arrayBuffer: async () => buffer } as File
 }
+
+describe('store initialization', () => {
+  it('shows stored tasks before persistent recovery checks finish', async () => {
+    await clearTasks()
+    useStore.setState({ tasks: [] })
+    const storedTask = task({ id: 'stored-running-task', status: 'running', finishedAt: null })
+    await putDbTask(storedTask)
+
+    let finishCheck: ((value: boolean) => void) | undefined
+    vi.mocked(hasPersistentProxyJob).mockImplementationOnce(() => new Promise((resolve) => {
+      finishCheck = resolve
+    }))
+
+    const initPromise = initStore()
+    for (let i = 0; i < 5 && !finishCheck; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(finishCheck).toBeTypeOf('function')
+    expect(useStore.getState().tasks.map((item) => item.id)).toContain(storedTask.id)
+
+    finishCheck?.(false)
+    await initPromise
+  })
+})
 
 describe('favorite collection deletion', () => {
   const collectionA = { id: 'collection-a', name: '收藏夹 A', createdAt: 1, updatedAt: 1 }
