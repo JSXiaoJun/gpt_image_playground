@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { extractJobImages, getJobImageUrls } from './job-images.mjs'
 import { readUpstreamResponseBody } from './read-upstream-body.mjs'
 
 const host = process.env.JOB_SERVER_HOST || '127.0.0.1'
@@ -150,6 +151,8 @@ function publicJob(job, includeResponse = true) {
     upstreamElapsedMs: job.upstreamElapsedMs,
     responseBytes: job.responseBytes,
     response: includeResponse ? job.response : null,
+    resultUrl: `/api-jobs/${encodeURIComponent(job.id)}/result`,
+    imageUrls: getJobImageUrls(job),
     error: job.error,
   }
 }
@@ -199,6 +202,7 @@ function startJob(id, payload) {
     error: null,
     controller,
     lastReadStatus: null,
+    images: [],
   }
   jobs.set(id, job)
 
@@ -288,6 +292,7 @@ function startJob(id, payload) {
         headers: responseHeaders,
         body: responseBody,
       }
+      job.images = response.ok ? extractJobImages(responseBody) : []
       if (upstreamTimeout) clearTimeout(upstreamTimeout)
       if (pendingTimeout) clearTimeout(pendingTimeout)
       clearInterval(heartbeat)
@@ -350,7 +355,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.46',
+        version: '0.6.47',
         imageInlineTimeoutMs,
         upstreamTimeoutMs,
         pendingTimeoutMs,
@@ -383,6 +388,42 @@ const server = http.createServer(async (req, res) => {
       const job = jobs.get(id)
       if (!job) {
         sendJson(res, 404, { error: '任务不存在' })
+        return
+      }
+      const imageMatch = req.url.match(/^\/api-jobs\/[^/?#]+\/images\/(\d+)/)
+      if (imageMatch) {
+        const image = job.images?.[Number(imageMatch[1])]
+        if (!image) {
+          sendJson(res, job.status === 'running' ? 202 : 404, { status: job.status, error: job.status === 'running' ? '图片仍在生成或传输中' : '图片不存在' })
+          return
+        }
+        if (image.url) {
+          res.writeHead(302, { location: image.url, 'cache-control': 'no-store' })
+          res.end()
+          return
+        }
+        const body = Buffer.from(image.base64, 'base64')
+        res.writeHead(200, {
+          'content-type': image.mimeType || 'image/png',
+          'content-length': body.length,
+          'cache-control': 'private, max-age=7200',
+          'content-disposition': `inline; filename="${id}-${Number(imageMatch[1]) + 1}"`,
+        })
+        res.end(body)
+        return
+      }
+      if (req.url.match(/^\/api-jobs\/[^/?#]+\/result(?:[?#]|$)/)) {
+        const imageUrls = getJobImageUrls(job)
+        const waitingText = job.phase === 'response_received' ? '上游已返回，正在接收图片数据...' : '图片正在生成...'
+        const content = job.status === 'done'
+          ? imageUrls.map((url, index) => `<figure><img src="${url}" alt="结果 ${index + 1}"><figcaption><a href="${url}" target="_blank">打开原图 ${index + 1}</a></figcaption></figure>`).join('') || '<p>任务已完成，但没有可识别的图片。</p>'
+          : job.status === 'error'
+            ? `<p class="error">任务失败：${String(job.error || '未知错误').replace(/[<>&"]/g, '')}</p>`
+            : `<p>${waitingText}</p>`
+        const refresh = job.status === 'running' ? '<meta http-equiv="refresh" content="2">' : ''
+        const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">${refresh}<meta name="viewport" content="width=device-width,initial-scale=1"><title>图片任务结果</title><style>body{margin:0;padding:24px;font:14px system-ui;color:#202124;background:#f7f7f8}main{max-width:1200px;margin:auto}p{text-align:center;margin:20vh 0;color:#666}figure{margin:0 0 24px}img{display:block;max-width:100%;height:auto;margin:auto;background:#eee}figcaption{text-align:center;padding:12px}a{color:#1677ff}.error{color:#dc2626}</style></head><body><main>${content}</main></body></html>`
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(html)
         return
       }
       const readStatus = `${job.status}:${job.phase}`

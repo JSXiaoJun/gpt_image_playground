@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { readFileSync } from 'fs'
 import { normalizeDevProxyConfig } from './src/lib/devProxy'
+import { extractJobImages, getJobImageUrls } from './deploy/job-images.mjs'
 import { readUpstreamResponseBody } from './deploy/read-upstream-body.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
@@ -136,12 +137,15 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
   const jobs = new Map<string, {
     id: string
     status: 'running' | 'done' | 'error'
+    phase: 'pending' | 'response_received' | 'done' | 'error'
     createdAt: number
     updatedAt: number
     response: { status: number; headers: Record<string, string>; body: string } | null
     error: string | null
     upstreamStatus?: number | null
     upstreamElapsedMs?: number | null
+    responseBytes?: number | null
+    images?: Array<{ base64?: string; mimeType?: string; url?: string }>
   }>()
 
   const sendJson = (res: any, status: number, data: unknown) => {
@@ -166,12 +170,15 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     const job = {
       id,
       status: 'running' as const,
+      phase: 'pending' as const,
       createdAt: startedAt,
       updatedAt: startedAt,
       response: null,
       error: null,
       upstreamStatus: null,
       upstreamElapsedMs: null,
+      responseBytes: null,
+      images: [],
     }
     jobs.set(id, job)
 
@@ -219,6 +226,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     })
       .then(async (response) => {
         clearTimeout(pendingTimeout)
+        job.phase = 'response_received'
         const headers: Record<string, string> = {}
         response.headers.forEach((value, key) => {
           if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return
@@ -239,9 +247,12 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
         const body = inlineResult.body
         if (inlineResult.count > 0) addDevJobLog('info', 'dev:job', '图片 URL 已内联', { id, count: inlineResult.count })
         job.status = response.ok ? 'done' : 'error'
+        job.phase = response.ok ? 'done' : 'error'
         job.upstreamStatus = response.status
         job.upstreamElapsedMs = Date.now() - startedAt
         job.response = { status: response.status, headers, body }
+        job.responseBytes = Buffer.byteLength(body, 'utf8')
+        job.images = response.ok ? extractJobImages(body) : []
         job.error = response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
         job.updatedAt = Date.now()
         addDevJobLog(response.ok ? 'info' : 'error', 'dev:job', '任务结束', {
@@ -254,6 +265,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
       })
       .catch((error) => {
         job.status = 'error'
+        job.phase = 'error'
         job.error = error instanceof Error ? error.message : String(error)
         job.updatedAt = Date.now()
         addDevJobLog('error', 'dev:job', '任务异常', { id, error: job.error })
@@ -271,7 +283,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.46',
+        version: '0.6.47',
         imageInlineTimeoutMs: IMAGE_INLINE_TIMEOUT_MS,
         pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
@@ -297,8 +309,47 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
 
     if (req.method === 'GET') {
       const job = jobs.get(id)
+      if (job) {
+        const imageMatch = req.url?.match(/^\/api-jobs\/[^/?#]+\/images\/(\d+)/)
+        if (imageMatch) {
+          const image = job.images?.[Number(imageMatch[1])]
+          if (!image) {
+            sendJson(res, job.status === 'running' ? 202 : 404, { status: job.status, error: job.status === 'running' ? '图片仍在生成或传输中' : '图片不存在' })
+            return
+          }
+          if (image.url) {
+            res.statusCode = 302
+            res.setHeader('location', image.url)
+            res.end()
+            return
+          }
+          const body = Buffer.from(image.base64 || '', 'base64')
+          res.statusCode = 200
+          res.setHeader('content-type', image.mimeType || 'image/png')
+          res.setHeader('content-length', String(body.length))
+          res.end(body)
+          return
+        }
+        if (req.url?.match(/^\/api-jobs\/[^/?#]+\/result(?:[?#]|$)/)) {
+          const imageUrls = getJobImageUrls(job)
+          const content = job.status === 'done'
+            ? imageUrls.map((url, index) => `<figure><img src="${url}" alt="结果 ${index + 1}"><figcaption><a href="${url}" target="_blank">打开原图 ${index + 1}</a></figcaption></figure>`).join('') || '<p>任务已完成，但没有可识别的图片。</p>'
+            : `<p>${job.phase === 'response_received' ? '上游已返回，正在接收图片数据...' : '图片正在生成...'}</p>`
+          const refresh = job.status === 'running' ? '<meta http-equiv="refresh" content="2">' : ''
+          res.statusCode = 200
+          res.setHeader('content-type', 'text/html; charset=utf-8')
+          res.setHeader('cache-control', 'no-store')
+          res.end(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">${refresh}<meta name="viewport" content="width=device-width,initial-scale=1"><title>图片任务结果</title><style>body{margin:0;padding:24px;font:14px system-ui;color:#202124;background:#f7f7f8}main{max-width:1200px;margin:auto}p{text-align:center;margin:20vh 0;color:#666}figure{margin:0 0 24px}img{display:block;max-width:100%;height:auto;margin:auto;background:#eee}figcaption{text-align:center;padding:12px}a{color:#1677ff}</style></head><body><main>${content}</main></body></html>`)
+          return
+        }
+      }
       const summaryOnly = new URL(req.url || '', 'http://127.0.0.1').searchParams.get('summary') === '1'
-      sendJson(res, job ? 200 : 404, job ? { ...job, response: summaryOnly ? null : job.response } : { error: '任务不存在' })
+      sendJson(res, job ? 200 : 404, job ? {
+        ...job,
+        response: summaryOnly ? null : job.response,
+        resultUrl: `/api-jobs/${encodeURIComponent(job.id)}/result`,
+        imageUrls: getJobImageUrls(job),
+      } : { error: '任务不存在' })
       return
     }
 

@@ -90,6 +90,7 @@ const persistentProxyRecoveryTaskIds = new Set<string>()
 const persistentProxyCompletionTaskIds = new Set<string>()
 const taskExecutionStartedAtById = new Map<string, number>()
 const taskCompletionIds = new Set<string>()
+const linkedImagePersistenceTaskIds = new Set<string>()
 let submitTaskRunning = false
 let persistentProxyRecoveryScanner: ReturnType<typeof setInterval> | null = null
 let persistentProxyRecoveryScanRunning = false
@@ -2175,6 +2176,20 @@ function parsePersistentProxyResponseBody(body: unknown): Record<string, unknown
 }
 
 function parsePersistentProxyJobResult(task: TaskRecord, job: PersistentProxyJobResponse): CallApiResult | null {
+  if (job.imageUrls?.length) {
+    const actualParams = {
+      size: task.params.size,
+      output_format: task.params.output_format,
+      n: job.imageUrls.length,
+    }
+    return {
+      images: [],
+      rawImageUrls: job.imageUrls,
+      actualParams,
+      actualParamsList: [],
+      revisedPrompts: [],
+    }
+  }
   const payload = parsePersistentProxyResponseBody(job.response?.body)
   if (!payload) return null
 
@@ -2309,6 +2324,9 @@ async function completePersistentProxyTaskFromJob(task: TaskRecord, job: Persist
       falRecoverable: false,
       customRecoverable: false,
     })
+    if (!outputIds.length && result.rawImageUrls?.length) {
+      void persistLinkedTaskImages(task.id, result.rawImageUrls)
+    }
     void deleteUnreferencedImageIds(task.streamPartialImageIds || [])
   } catch (err) {
     clearOpenAIWatchdogTimer(task.id)
@@ -2344,7 +2362,7 @@ async function recoverPersistentProxyTask(taskId: string) {
     return
   }
 
-  const job = await readPersistentProxyJob(taskId).catch(() => null)
+  const job = await readPersistentProxyJob(taskId, undefined, true).catch(() => null)
   if (!job) {
     if (
       task.status === 'running' &&
@@ -2367,6 +2385,10 @@ async function recoverPersistentProxyTask(taskId: string) {
     }
     schedulePersistentProxyRecovery(taskId)
     return
+  }
+
+  if (job.resultUrl && task.proxyResultUrl !== job.resultUrl) {
+    updateTaskInStore(taskId, { proxyResultUrl: job.resultUrl })
   }
 
   if (job.status === 'error') {
@@ -3227,6 +3249,46 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
   } catch (err) {
     await deleteUnreferencedImageIds(storedImageIds)
     throw err
+  }
+}
+
+async function persistLinkedTaskImages(taskId: string, urls: string[]) {
+  if (linkedImagePersistenceTaskIds.has(taskId)) return
+  linkedImagePersistenceTaskIds.add(taskId)
+
+  try {
+    const dataUrls: string[] = []
+    for (const url of urls) {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      if (!blob.type.startsWith('image/')) throw new Error('结果链接没有返回图片')
+      dataUrls.push(await blobToDataUrl(blob))
+    }
+
+    const task = useStore.getState().tasks.find((item) => item.id === taskId)
+    if (!task || task.status !== 'done') return
+    const stored = await storeTaskOutputImages(task, dataUrls)
+    const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+    if (!latest || latest.status !== 'done') {
+      await deleteUnreferencedImageIds(stored.outputIds)
+      return
+    }
+    updateTaskInStore(taskId, {
+      outputImages: stored.outputIds,
+      transparentOriginalImages: stored.transparentOriginalImageIds,
+    })
+    addJobLog('info', 'store:linked-images', '结果链接图片已写入本地数据库', {
+      taskId,
+      imageCount: stored.outputIds.length,
+    })
+  } catch (error) {
+    addJobLog('warn', 'store:linked-images', '结果链接图片后台保存失败', {
+      taskId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    linkedImagePersistenceTaskIds.delete(taskId)
   }
 }
 
@@ -5149,6 +5211,9 @@ async function executeTask(taskId: string, allowTakeover = false) {
       falRecoverable: false,
       customRecoverable: false,
     })
+    if (!outputIds.length && result.rawImageUrls?.length) {
+      void persistLinkedTaskImages(taskId, result.rawImageUrls)
+    }
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
     const successCount = outputIds.length || result.rawImageUrls?.length || 0

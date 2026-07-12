@@ -7,7 +7,7 @@ import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL, DEFAULT_GEMINI_MODEL } from '.
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { isInterruptedTaskError } from '../lib/taskStatus'
 import { getDisplayImageUrl } from '../lib/imageProxy'
-import { CodeIcon, TransparentBgIcon } from './icons'
+import { CodeIcon, LinkIcon, TransparentBgIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
 interface Props {
@@ -447,6 +447,18 @@ export default function TaskCard({
                 />
               </svg>
               <span className="text-xs text-gray-400 dark:text-gray-500">生成中...</span>
+              {task.proxyResultUrl && (
+                <a
+                  href={task.proxyResultUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1 rounded border border-blue-200 bg-white px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:border-blue-500/30 dark:bg-gray-900 dark:text-blue-300"
+                >
+                  <LinkIcon className="h-3.5 w-3.5" />
+                  实时结果
+                </a>
+              )}
             </div>
           )}
           {task.status === 'error' && isFalReconnecting && (

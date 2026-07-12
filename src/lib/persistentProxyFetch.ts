@@ -14,6 +14,8 @@ export interface PersistentProxyJobResponse {
     headers: Record<string, string>
     body: string
   } | null
+  resultUrl?: string
+  imageUrls?: string[]
   error?: string | null
 }
 
@@ -88,6 +90,11 @@ export async function readPersistentProxyJob(jobId: string, signal?: AbortSignal
     return null
   }
   const job = await response.json() as PersistentProxyJobResponse
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  if (origin && job.resultUrl?.startsWith('/')) job.resultUrl = new URL(job.resultUrl, origin).toString()
+  if (origin && job.imageUrls?.length) {
+    job.imageUrls = job.imageUrls.map((url) => url.startsWith('/') ? new URL(url, origin).toString() : url)
+  }
   addJobLog('debug', 'frontend:job-read', '任务代理状态', {
     jobId,
     status: job.status,
@@ -103,11 +110,19 @@ export async function readPersistentProxyJob(jobId: string, signal?: AbortSignal
 
 async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
   while (true) {
-    const job = await readPersistentProxyJob(jobId)
+    const job = await readPersistentProxyJob(jobId, undefined, true)
     if (!job) throw new Error('任务代理记录不存在')
 
     if (job.status === 'done') {
-      const response = job.response
+      if (job.imageUrls?.length) {
+        return new Response(JSON.stringify({ data: job.imageUrls.map((url) => ({ url })) }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const completeJob = await readPersistentProxyJob(jobId)
+      if (!completeJob) throw new Error('任务代理记录不存在')
+      const response = completeJob.response
       if (!response) throw new Error('任务代理没有返回响应')
       addJobLog('info', 'frontend:job-poll', '任务代理完成', {
         jobId,

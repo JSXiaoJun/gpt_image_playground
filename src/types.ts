@@ -206,6 +206,8 @@ export interface TaskRecord {
   streamPartialImageIds?: string[]
   /** API 返回的原始图片 HTTP URL（非 base64 时记录） */
   rawImageUrls?: string[]
+  /** Docker 持久任务的实时结果页，可在图片传输完成前打开 */
+  proxyResultUrl?: string
   /** 发生解析错误时的原始响应 JSON */
   rawResponsePayload?: string
   status: TaskStatus
