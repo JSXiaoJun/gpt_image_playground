@@ -6,7 +6,6 @@ import { extractJobImages, getJobImageUrls } from './deploy/job-images.mjs'
 import { readUpstreamResponseBody } from './deploy/read-upstream-body.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
-const IMAGE_INLINE_TIMEOUT_MS = 8_000
 const JOB_PENDING_TIMEOUT_MS = 180_000
 const devJobLogs: Array<{ id: string; time: string; level: string; source: string; message: string; data?: unknown }> = []
 
@@ -92,48 +91,8 @@ function isHttpUrl(value: unknown) {
   }
 }
 
-async function inlineImageUrlsInResponseBody(body: string) {
-  let payload: any
-  try {
-    payload = JSON.parse(body)
-  } catch {
-    return { body, count: 0, urlCount: 0 }
-  }
-
-  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.data)) {
-    return { body, count: 0, urlCount: 0 }
-  }
-
-  let count = 0
-  const urlItems = payload.data.filter((item: any) => item && typeof item === 'object' && !item.b64_json && isHttpUrl(item.url))
-  await Promise.all(payload.data.map(async (item: any) => {
-    if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(new Error('image url inline timeout')), IMAGE_INLINE_TIMEOUT_MS)
-    try {
-      const response = await fetch(item.url, {
-        headers: {
-          accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          'user-agent': 'gpt-image-playground-image-proxy/1.0',
-        },
-        signal: controller.signal,
-      })
-      if (!response.ok) return
-      const contentType = response.headers.get('content-type') || ''
-      if (!contentType.toLowerCase().startsWith('image/')) return
-      item.b64_json = Buffer.from(await response.arrayBuffer()).toString('base64')
-      count += 1
-    } catch (error) {
-      addDevJobLog('warn', 'dev:inline-url', '图片 URL 内联失败', { error: error instanceof Error ? error.message : String(error), url: item.url })
-    } finally {
-      clearTimeout(timer)
-    }
-  }))
-
-  return { body: count > 0 ? JSON.stringify(payload) : body, count, urlCount: urlItems.length }
-}
-
 function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyConfig>) {
+  type JobImage = { base64?: string; mimeType?: string; url?: string; body?: Buffer; loading?: Promise<JobImage> }
   const jobs = new Map<string, {
     id: string
     status: 'running' | 'done' | 'error'
@@ -145,8 +104,40 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     upstreamStatus?: number | null
     upstreamElapsedMs?: number | null
     responseBytes?: number | null
-    images?: Array<{ base64?: string; mimeType?: string; url?: string }>
+    images?: JobImage[]
   }>()
+
+  const loadJobImage = async (image: JobImage): Promise<JobImage> => {
+    if (image.body) return image
+    if (image.loading) return image.loading
+
+    image.loading = (async () => {
+      if (image.base64) {
+        image.body = Buffer.from(image.base64, 'base64')
+        delete image.base64
+        return image
+      }
+      if (!isHttpUrl(image.url)) throw new Error('Invalid image URL')
+      const response = await fetch(image.url, {
+        headers: {
+          accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'user-agent': 'gpt-image-playground-image-proxy/1.0',
+        },
+      })
+      if (!response.ok) throw new Error(`Image fetch failed: HTTP ${response.status}`)
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.toLowerCase().startsWith('image/')) throw new Error('Target URL did not return an image')
+      image.mimeType = contentType.split(';')[0]
+      image.body = Buffer.from(await response.arrayBuffer())
+      return image
+    })()
+
+    try {
+      return await image.loading
+    } finally {
+      delete image.loading
+    }
+  }
 
   const sendJson = (res: any, status: number, data: unknown) => {
     res.statusCode = status
@@ -241,20 +232,24 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
             responseBytes: Buffer.byteLength(rawBody, 'utf8'),
           })
         }
-        const inlineResult = response.ok
-          ? await inlineImageUrlsInResponseBody(rawBody)
-          : { body: rawBody, count: 0, urlCount: 0 }
-        const body = inlineResult.body
-        if (inlineResult.count > 0) addDevJobLog('info', 'dev:job', '图片 URL 已内联', { id, count: inlineResult.count })
+        const body = rawBody
         job.status = response.ok ? 'done' : 'error'
         job.phase = response.ok ? 'done' : 'error'
         job.upstreamStatus = response.status
         job.upstreamElapsedMs = Date.now() - startedAt
-        job.response = { status: response.status, headers, body }
         job.responseBytes = Buffer.byteLength(body, 'utf8')
-        job.images = response.ok ? extractJobImages(body) : []
+        job.images = response.ok ? extractJobImages(body) as JobImage[] : []
+        job.response = { status: response.status, headers, body: job.images.length > 0 ? '' : body }
         job.error = response.ok ? null : body || `上游接口返回 HTTP ${response.status}`
         job.updatedAt = Date.now()
+        for (const image of job.images) {
+          void loadJobImage(image).catch((error) => {
+            addDevJobLog('warn', 'dev:image-cache', '图片二进制缓存失败', {
+              id,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          })
+        }
         addDevJobLog(response.ok ? 'info' : 'error', 'dev:job', '任务结束', {
           id,
           status: job.status,
@@ -283,8 +278,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.47',
-        imageInlineTimeoutMs: IMAGE_INLINE_TIMEOUT_MS,
+        version: '0.6.48',
         pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
       })
@@ -317,16 +311,12 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
             sendJson(res, job.status === 'running' ? 202 : 404, { status: job.status, error: job.status === 'running' ? '图片仍在生成或传输中' : '图片不存在' })
             return
           }
-          if (image.url) {
-            res.statusCode = 302
-            res.setHeader('location', image.url)
-            res.end()
-            return
-          }
-          const body = Buffer.from(image.base64 || '', 'base64')
+          const loaded = await loadJobImage(image)
+          const body = loaded.body || Buffer.alloc(0)
           res.statusCode = 200
-          res.setHeader('content-type', image.mimeType || 'image/png')
+          res.setHeader('content-type', loaded.mimeType || 'image/png')
           res.setHeader('content-length', String(body.length))
+          res.setHeader('cache-control', 'private, max-age=7200')
           res.end(body)
           return
         }
@@ -346,6 +336,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
       const summaryOnly = new URL(req.url || '', 'http://127.0.0.1').searchParams.get('summary') === '1'
       sendJson(res, job ? 200 : 404, job ? {
         ...job,
+        images: undefined,
         response: summaryOnly ? null : job.response,
         resultUrl: `/api-jobs/${encodeURIComponent(job.id)}/result`,
         imageUrls: getJobImageUrls(job),
@@ -356,7 +347,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.method === 'POST') {
       const existing = jobs.get(id)
       if (existing) {
-        sendJson(res, 200, existing)
+        sendJson(res, 200, { ...existing, images: undefined })
         return
       }
       const payload = JSON.parse(await readRequestBody(req))

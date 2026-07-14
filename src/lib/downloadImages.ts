@@ -1,6 +1,7 @@
 import { zipSync } from 'fflate'
 import type { TaskRecord } from '../types'
-import { ensureImageCached } from '../store'
+import { getImage } from './db'
+import { dataUrlToBytes } from './dataUrl'
 import { getNumberedFileNameBase, sanitizeFileNamePart } from './exportFileName'
 
 const MIME_EXTENSIONS: Record<string, string> = {
@@ -20,7 +21,8 @@ export interface DownloadImageZipEntry {
   fileNameBase?: string
 }
 
-type TaskOutputZipTask = Pick<TaskRecord, 'id' | 'createdAt' | 'outputImages'>
+type TaskOutputZipTask = Pick<TaskRecord, 'id' | 'createdAt' | 'outputImages' | 'rawImageUrls'>
+type TaskOutputSources = Pick<TaskRecord, 'outputImages' | 'rawImageUrls'>
 
 export { formatExportFileTime } from './exportFileName'
 
@@ -61,10 +63,10 @@ export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[]
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index]
     try {
-      const blob = await getImageBlob(entry.imageId)
+      const image = await getImageBytes(entry.imageId)
       const order = String(index + 1).padStart(2, '0')
       const base = sanitizeFileNamePart(entry.fileNameBase || `image-${order}`) || `image-${order}`
-      const ext = getBlobExtension(blob)
+      const ext = getMimeExtension(image.mimeType)
       let fileName = `${base}.${ext}`
       let duplicateIndex = 2
       while (usedNames.has(fileName)) {
@@ -72,7 +74,7 @@ export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[]
         duplicateIndex++
       }
       usedNames.add(fileName)
-      zipFiles[fileName] = [new Uint8Array(await blob.arrayBuffer()), { mtime: new Date() }]
+      zipFiles[fileName] = [image.bytes, { mtime: new Date() }]
       successCount++
     } catch (err) {
       console.error(err)
@@ -81,7 +83,8 @@ export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[]
   }
 
   if (successCount > 0) {
-    const zipped = zipSync(zipFiles, { level: 6 })
+    // PNG/JPEG/WebP 已经压缩，再做 Deflate 只会消耗大量 CPU，几乎不减小体积。
+    const zipped = zipSync(zipFiles, { level: 0 })
     const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength) as ArrayBuffer
     triggerDownload(new Blob([buffer], { type: 'application/zip' }), `${sanitizeFileNamePart(zipFileNameBase) || 'images'}.zip`)
   }
@@ -92,7 +95,13 @@ export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[]
 export function getTaskOutputImageZipEntries(tasks: TaskOutputZipTask[]): DownloadImageZipEntry[] {
   return [...tasks]
     .sort((a, b) => b.createdAt - a.createdAt)
-    .flatMap((task) => getImageZipEntries(task.outputImages || [], `task-${task.id}`))
+    .flatMap((task) => getImageZipEntries(getTaskOutputImageSources(task), `task-${task.id}`))
+}
+
+export function getTaskOutputImageSources(task: TaskOutputSources): string[] {
+  const count = Math.max(task.outputImages.length, task.rawImageUrls?.length ?? 0)
+  return Array.from({ length: count }, (_, index) => task.outputImages[index] || task.rawImageUrls?.[index] || '')
+    .filter(Boolean)
 }
 
 export function getImageZipEntries(imageIds: string[], fileNameBase = 'image'): DownloadImageZipEntry[] {
@@ -103,14 +112,32 @@ export function getImageZipEntries(imageIds: string[], fileNameBase = 'image'): 
 }
 
 async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
-  let src = imageIdOrUrl
+  const image = await getImageBytes(imageIdOrUrl)
+  const buffer = image.bytes.buffer.slice(image.bytes.byteOffset, image.bytes.byteOffset + image.bytes.byteLength) as ArrayBuffer
+  return new Blob([buffer], { type: image.mimeType })
+}
+
+async function getImageBytes(imageIdOrUrl: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
   if (!imageIdOrUrl.startsWith('data:') && !imageIdOrUrl.startsWith('http://') && !imageIdOrUrl.startsWith('https://')) {
-    src = await ensureImageCached(imageIdOrUrl) ?? imageIdOrUrl
+    const image = await getImage(imageIdOrUrl)
+    if (!image) throw new Error(`读取图片失败：${imageIdOrUrl}`)
+    const decoded = dataUrlToBytes(image.dataUrl)
+    const mimeType = image.dataUrl.match(/^data:([^;,]+)/)?.[1] || `image/${decoded.ext}`
+    return { bytes: decoded.bytes, mimeType }
   }
 
-  const res = await fetch(src)
-  if (!res.ok && !src.startsWith('data:')) throw new Error(`读取图片失败：${imageIdOrUrl}`)
-  return await res.blob()
+  if (imageIdOrUrl.startsWith('data:')) {
+    const decoded = dataUrlToBytes(imageIdOrUrl)
+    const mimeType = imageIdOrUrl.match(/^data:([^;,]+)/)?.[1] || `image/${decoded.ext}`
+    return { bytes: decoded.bytes, mimeType }
+  }
+
+  const response = await fetch(imageIdOrUrl)
+  if (!response.ok) throw new Error(`读取图片失败：${imageIdOrUrl}`)
+  return {
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    mimeType: response.headers.get('content-type')?.split(';')[0] || 'image/png',
+  }
 }
 
 function triggerDownload(blob: Blob, fileName: string) {
@@ -121,11 +148,15 @@ function triggerDownload(blob: Blob, fileName: string) {
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
-  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 function getBlobExtension(blob: Blob): string {
-  return MIME_EXTENSIONS[blob.type.toLowerCase()] ?? blob.type.split('/')[1] ?? 'png'
+  return getMimeExtension(blob.type)
+}
+
+function getMimeExtension(mimeType: string): string {
+  return MIME_EXTENSIONS[mimeType.toLowerCase()] ?? mimeType.split('/')[1] ?? 'png'
 }
 
 function delay(ms: number) {

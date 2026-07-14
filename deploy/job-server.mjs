@@ -17,7 +17,6 @@ const normalizedPendingTimeoutMs = rawPendingTimeout > 0 && rawPendingTimeout < 
 const pendingTimeoutMs = Number.isFinite(normalizedPendingTimeoutMs) && normalizedPendingTimeoutMs > 0
   ? Math.max(30 * 1000, normalizedPendingTimeoutMs)
   : 0
-const imageInlineTimeoutMs = 8_000
 const jobs = new Map()
 const serverLogs = []
 
@@ -99,45 +98,37 @@ function isHttpUrl(value) {
   }
 }
 
-async function inlineImageUrlsInResponseBody(body) {
-  let payload
-  try {
-    payload = JSON.parse(body)
-  } catch {
-    return { body, count: 0, urlCount: 0 }
-  }
+async function loadJobImage(image) {
+  if (image.body) return image
+  if (image.loading) return image.loading
 
-  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.data)) {
-    return { body, count: 0, urlCount: 0 }
-  }
-
-  let count = 0
-  const urlItems = payload.data.filter((item) => item && typeof item === 'object' && !item.b64_json && isHttpUrl(item.url))
-  await Promise.all(payload.data.map(async (item) => {
-    if (!item || typeof item !== 'object' || item.b64_json || !isHttpUrl(item.url)) return
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(new Error('image url inline timeout')), imageInlineTimeoutMs)
-    try {
-      const response = await fetch(item.url, {
-        headers: {
-          accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          'user-agent': 'gpt-image-playground-image-proxy/1.0',
-        },
-        signal: controller.signal,
-      })
-      if (!response.ok) return
-      const contentType = response.headers.get('content-type') || ''
-      if (!contentType.toLowerCase().startsWith('image/')) return
-      item.b64_json = Buffer.from(await response.arrayBuffer()).toString('base64')
-      count += 1
-  } catch (err) {
-      addServerLog('warn', 'server:inline-url', '图片 URL 内联失败', { error: err instanceof Error ? err.message : String(err), url: item.url })
-    } finally {
-      clearTimeout(timer)
+  image.loading = (async () => {
+    if (image.base64) {
+      image.body = Buffer.from(image.base64, 'base64')
+      delete image.base64
+      return image
     }
-  }))
 
-  return { body: count > 0 ? JSON.stringify(payload) : body, count, urlCount: urlItems.length }
+    if (!isHttpUrl(image.url)) throw new Error('Invalid image URL')
+    const response = await fetch(image.url, {
+      headers: {
+        accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'user-agent': 'gpt-image-playground-image-proxy/1.0',
+      },
+    })
+    if (!response.ok) throw new Error(`Image fetch failed: HTTP ${response.status}`)
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.toLowerCase().startsWith('image/')) throw new Error('Target URL did not return an image')
+    image.mimeType = contentType.split(';')[0]
+    image.body = Buffer.from(await response.arrayBuffer())
+    return image
+  })()
+
+  try {
+    return await image.loading
+  } finally {
+    delete image.loading
+  }
 }
 
 function publicJob(job, includeResponse = true) {
@@ -281,18 +272,14 @@ function startJob(id, payload) {
           responseBytes: Buffer.byteLength(rawResponseBody, 'utf8'),
         })
       }
-      const inlineResult = response.ok
-        ? await inlineImageUrlsInResponseBody(rawResponseBody)
-        : { body: rawResponseBody, count: 0, urlCount: 0 }
-      const responseBody = inlineResult.body
-      if (inlineResult.count > 0) addServerLog('info', 'server:job', '图片 URL 已内联', { id, count: inlineResult.count })
+      const responseBody = rawResponseBody
+      job.images = response.ok ? extractJobImages(responseBody) : []
       job.responseBytes = Buffer.byteLength(responseBody, 'utf8')
       job.response = {
         status: response.status,
         headers: responseHeaders,
-        body: responseBody,
+        body: job.images.length > 0 ? '' : responseBody,
       }
-      job.images = response.ok ? extractJobImages(responseBody) : []
       if (upstreamTimeout) clearTimeout(upstreamTimeout)
       if (pendingTimeout) clearTimeout(pendingTimeout)
       clearInterval(heartbeat)
@@ -300,6 +287,14 @@ function startJob(id, payload) {
       job.phase = response.ok ? 'done' : 'error'
       job.error = response.ok ? null : responseBody || `上游接口返回 HTTP ${response.status}`
       job.updatedAt = Date.now()
+      for (const image of job.images) {
+        void loadJobImage(image).catch((err) => {
+          addServerLog('warn', 'server:image-cache', '图片二进制缓存失败', {
+            id,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        })
+      }
       addServerLog(job.status === 'done' ? 'info' : 'error', 'server:job', '任务结束', {
         id,
         status: job.status,
@@ -355,8 +350,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.47',
-        imageInlineTimeoutMs,
+        version: '0.6.48',
         upstreamTimeoutMs,
         pendingTimeoutMs,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
@@ -397,14 +391,10 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, job.status === 'running' ? 202 : 404, { status: job.status, error: job.status === 'running' ? '图片仍在生成或传输中' : '图片不存在' })
           return
         }
-        if (image.url) {
-          res.writeHead(302, { location: image.url, 'cache-control': 'no-store' })
-          res.end()
-          return
-        }
-        const body = Buffer.from(image.base64, 'base64')
+        const loaded = await loadJobImage(image)
+        const body = loaded.body
         res.writeHead(200, {
-          'content-type': image.mimeType || 'image/png',
+          'content-type': loaded.mimeType || 'image/png',
           'content-length': body.length,
           'cache-control': 'private, max-age=7200',
           'content-disposition': `inline; filename="${id}-${Number(imageMatch[1]) + 1}"`,

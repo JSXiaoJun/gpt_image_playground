@@ -8,7 +8,7 @@ import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
 import { copyImageSourceToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
-import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
+import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries, getTaskOutputImageSources } from '../lib/downloadImages'
 import { getApiProviderLabel } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
@@ -95,7 +95,9 @@ export default function DetailModal() {
     const count = task?.status === 'running'
       ? streamPreviewItems.length
       : task
-      ? (task.outputErrors?.length ? Math.max(task.params.n, task.outputImages.length + task.outputErrors.length) : task.outputImages.length)
+      ? (task.outputErrors?.length
+          ? Math.max(task.params.n, Math.max(task.outputImages.length, task.rawImageUrls?.length ?? 0) + task.outputErrors.length)
+          : Math.max(task.outputImages.length, task.rawImageUrls?.length ?? 0))
       : 0
     if (count > 0 && imageIndex >= count) setImageIndex(count - 1)
   }, [imageIndex, streamPreviewItems.length, task, task?.status])
@@ -169,7 +171,7 @@ export default function DetailModal() {
     }
 
     const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item.error]))
-    const requestedCount = Math.max(task.params.n, task.outputImages.length + rawImageUrls.length + outputErrors.length)
+    const requestedCount = Math.max(task.params.n, Math.max(task.outputImages.length, rawImageUrls.length) + outputErrors.length)
     let outputImageIndex = 0
     return Array.from({ length: requestedCount }, (_, requestIndex) => {
       const error = errorsByIndex.get(requestIndex)
@@ -370,10 +372,10 @@ export default function DetailModal() {
 
   const handleDownloadCurrentOutput = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!currentOutputImageId || !task) return
+    if ((!currentOutputImageId && !currentOutputRawUrl) || !task) return
 
     try {
-      const result = await downloadImageIds([currentOutputImageId], `task-${task.id}`)
+      const result = await downloadImageIds([currentOutputImageId || currentOutputRawUrl], `task-${task.id}`)
       if (result.successCount === 0) {
         showToast('下载失败', 'error')
       } else {
@@ -404,13 +406,15 @@ export default function DetailModal() {
 
   const handleDownloadAllOutputs = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!task?.outputImages?.length) return
+    if (!task) return
+    const outputImages = getTaskOutputImageSources(task)
+    if (!outputImages.length) return
 
     try {
       const fileNameBase = `task-${task.id}`
       const result = settings.zipDownloadRoutes.includes('task-detail-all')
-        ? await downloadImageEntriesAsZip(getImageZipEntries(task.outputImages, fileNameBase), fileNameBase)
-        : await downloadImageIds(task.outputImages, fileNameBase)
+        ? await downloadImageEntriesAsZip(getImageZipEntries(outputImages, fileNameBase), fileNameBase)
+        : await downloadImageIds(outputImages, fileNameBase)
       if (result.successCount === 0) {
         showToast('下载失败', 'error')
       } else if (result.failCount > 0) {
@@ -495,7 +499,7 @@ export default function DetailModal() {
                   </ViewportTooltip>
                 </div>
               )}
-              {task.outputImages.length > 1 && (
+              {getTaskOutputImageSources(task).length > 1 && (
                 <div className="relative group flex">
                   <button
                     type="button"

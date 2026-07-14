@@ -3257,30 +3257,53 @@ async function persistLinkedTaskImages(taskId: string, urls: string[]) {
   linkedImagePersistenceTaskIds.add(taskId)
 
   try {
-    const dataUrls: string[] = []
-    for (const url of urls) {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const blob = await response.blob()
-      if (!blob.type.startsWith('image/')) throw new Error('结果链接没有返回图片')
-      dataUrls.push(await blobToDataUrl(blob))
+    const storedByIndex: Array<Awaited<ReturnType<typeof storeTaskOutputImages>> | undefined> = new Array(urls.length)
+    let nextIndex = 0
+
+    const worker = async () => {
+      while (nextIndex < urls.length) {
+        const index = nextIndex++
+        try {
+          const response = await fetch(urls[index], { cache: 'force-cache' })
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const blob = await response.blob()
+          if (!blob.type.startsWith('image/')) throw new Error('结果链接没有返回图片')
+
+          const task = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!task || task.status !== 'done') return
+          storedByIndex[index] = await storeTaskOutputImages(task, [await blobToDataUrl(blob)])
+
+          let completedCount = 0
+          while (storedByIndex[completedCount]) completedCount++
+          const completed = storedByIndex.slice(0, completedCount) as Array<NonNullable<typeof storedByIndex[number]>>
+          const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!latest || latest.status !== 'done') return
+          updateTaskInStore(taskId, {
+            outputImages: completed.flatMap((item) => item.outputIds),
+            transparentOriginalImages: completed.some((item) => item.transparentOriginalImageIds)
+              ? completed.flatMap((item) => item.transparentOriginalImageIds ?? [''])
+              : undefined,
+          })
+        } catch (error) {
+          addJobLog('warn', 'store:linked-images', '单张结果链接图片后台保存失败', {
+            taskId,
+            index,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
     }
 
-    const task = useStore.getState().tasks.find((item) => item.id === taskId)
-    if (!task || task.status !== 'done') return
-    const stored = await storeTaskOutputImages(task, dataUrls)
-    const latest = useStore.getState().tasks.find((item) => item.id === taskId)
-    if (!latest || latest.status !== 'done') {
-      await deleteUnreferencedImageIds(stored.outputIds)
-      return
-    }
-    updateTaskInStore(taskId, {
-      outputImages: stored.outputIds,
-      transparentOriginalImages: stored.transparentOriginalImageIds,
-    })
+    await Promise.all(Array.from({ length: Math.min(2, urls.length) }, () => worker()))
+    let completedCount = 0
+    while (storedByIndex[completedCount]) completedCount++
+    const unusedIds = storedByIndex
+      .slice(completedCount)
+      .flatMap((item) => item ? [...item.outputIds, ...(item.transparentOriginalImageIds ?? [])] : [])
+    await deleteUnreferencedImageIds(unusedIds)
     addJobLog('info', 'store:linked-images', '结果链接图片已写入本地数据库', {
       taskId,
-      imageCount: stored.outputIds.length,
+      imageCount: completedCount,
     })
   } catch (error) {
     addJobLog('warn', 'store:linked-images', '结果链接图片后台保存失败', {

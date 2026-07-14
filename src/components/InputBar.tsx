@@ -10,7 +10,7 @@ import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
 import { useHintTooltip } from '../hooks/useHintTooltip'
-import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageZipEntries } from '../lib/downloadImages'
+import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageSources, getTaskOutputImageZipEntries } from '../lib/downloadImages'
 import SizePickerModal from './SizePickerModal'
 import { CloseIcon } from './icons'
 import ButtonTooltip from './input/buttonTooltip'
@@ -504,7 +504,7 @@ export default function InputBar() {
 
   const handleDownloadSelected = useCallback(async () => {
     const selectedTasks = tasks.filter((t) => selectedTaskIds.includes(t.id))
-    const imageIds = selectedTasks.flatMap(t => t.outputImages || [])
+    const imageIds = selectedTasks.flatMap((task) => getTaskOutputImageSources(task))
     if (imageIds.length === 0) {
       showToast('选中的任务没有图片', 'info')
       return
