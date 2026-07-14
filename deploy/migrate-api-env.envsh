@@ -7,9 +7,9 @@ if [ -n "$API_URL" ]; then
 fi
 
 if [ "${DEFAULT_API_URL+x}" != "x" ]; then
-    DEFAULT_API_URL=${API_URL:-https://www.yyapi.cloud/v1}
+    DEFAULT_API_URL=${API_URL:-https://zl.yyapi.cloud/v1}
 fi
-API_PROXY_URL=${API_PROXY_URL:-${API_URL:-https://www.yyapi.cloud/v1}}
+API_PROXY_URL=${API_PROXY_URL:-${API_URL:-https://zl.yyapi.cloud/v1}}
 case "$API_PROXY_URL" in
     */v1) API_PROXY_URL="${API_PROXY_URL%/v1}" ;;
     */v1/) API_PROXY_URL="${API_PROXY_URL%/v1/}" ;;

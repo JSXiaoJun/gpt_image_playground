@@ -56,7 +56,7 @@ function readBody(req) {
 }
 
 function getProxyBaseUrl() {
-  const raw = process.env.API_PROXY_URL || process.env.API_URL || 'https://www.yyapi.cloud'
+  const raw = process.env.API_PROXY_URL || process.env.API_URL || 'https://zl.yyapi.cloud'
   const input = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(raw) ? raw : `https://${raw}`
   const url = new URL(input)
   const pathname = url.pathname.replace(/\/+$/, '')
@@ -350,7 +350,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.48',
+        version: '0.6.49',
         upstreamTimeoutMs,
         pendingTimeoutMs,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,

@@ -25,7 +25,7 @@ const DEFAULT_DEV_PROXY_CONFIG = {
   enabled: true,
   locked: true,
   prefix: '/api-proxy',
-  target: 'https://www.yyapi.cloud',
+  target: 'https://zl.yyapi.cloud',
   changeOrigin: true,
   secure: true,
 }
@@ -278,7 +278,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.48',
+        version: '0.6.49',
         pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
       })
