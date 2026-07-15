@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readPersistentProxyJob } from './persistentProxyFetch'
+import { fetchWithPersistentProxy, readPersistentProxyJob } from './persistentProxyFetch'
 
 describe('persistent proxy job reads', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
   })
 
   it('requests a body-free summary for existence checks', async () => {
@@ -42,5 +43,44 @@ describe('persistent proxy job reads', () => {
 
     expect(job?.resultUrl).toBe('https://image.example.com/api-jobs/task-1/result')
     expect(job?.imageUrls).toEqual(['https://image.example.com/api-jobs/task-1/images/0'])
+  })
+
+  it('hands multipart requests to the persistent job server', async () => {
+    vi.stubEnv('VITE_DOCKER_DEPLOYMENT', 'true')
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    const formData = new FormData()
+    formData.append('prompt', 'edit image')
+    formData.append('image[]', new Blob(['image'], { type: 'image/png' }), 'input.png')
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'task-edit',
+        status: 'running',
+        phase: 'pending',
+      }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'task-edit',
+        status: 'done',
+        phase: 'done',
+        imageUrls: ['/api-jobs/task-edit/images/0'],
+      }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await fetchWithPersistentProxy('https://zl.yyapi.cloud/v1/images/edits', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-key' },
+      body: formData,
+    }, 'task-edit', 600)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    const headers = new Headers((init as RequestInit).headers)
+    expect(String(url)).toContain('/api-jobs/task-edit?raw=1')
+    expect(String(url)).toContain(encodeURIComponent('/api-proxy/v1/images/edits'))
+    expect((init as RequestInit).body).toBe(formData)
+    expect(JSON.parse(decodeURIComponent(headers.get('x-job-forward-headers') || ''))).toEqual({
+      authorization: 'Bearer test-key',
+    })
+    await expect(response.json()).resolves.toEqual({
+      data: [{ url: '/api-jobs/task-edit/images/0' }],
+    })
   })
 })

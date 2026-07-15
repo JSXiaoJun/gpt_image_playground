@@ -1057,4 +1057,47 @@ describe('callImageApi', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api-proxy/v1beta/models/gemini-3.1-flash-image:generateContent')
   })
 
+  it('accepts image URLs returned by the persistent proxy for Gemini', async () => {
+    vi.stubEnv('VITE_DOCKER_DEPLOYMENT', 'true')
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'task-gemini',
+        status: 'running',
+        phase: 'pending',
+      }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'task-gemini',
+        status: 'done',
+        phase: 'done',
+        responseBytes: 22_717_921,
+        response: null,
+        imageUrls: ['/api-jobs/task-gemini/images/0'],
+      }), { status: 200 }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'profile-gemini',
+          provider: 'gemini',
+          baseUrl: 'https://zl.yyapi.cloud',
+          apiKey: 'test-key',
+          model: 'gemini-3.1-flash-image',
+          apiProxy: false,
+        }],
+        activeProfileId: 'profile-gemini',
+      },
+      taskId: 'task-gemini',
+      prompt: '画一只猫',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api-jobs/task-gemini')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api-jobs/task-gemini?summary=1')
+    expect(result.images).toEqual(['/api-jobs/task-gemini/images/0'])
+  })
+
 })

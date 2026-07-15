@@ -42,13 +42,17 @@ function loadDevProxyConfig() {
   }
 }
 
-function readRequestBody(req: NodeJS.ReadableStream) {
-  return new Promise<string>((resolve, reject) => {
+function readRequestBuffer(req: NodeJS.ReadableStream) {
+  return new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = []
     req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
+}
+
+async function readRequestBody(req: NodeJS.ReadableStream) {
+  return (await readRequestBuffer(req)).toString('utf8')
 }
 
 async function proxyDevImage(req: any, res: any) {
@@ -176,10 +180,12 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     const method = String(payload.method || 'POST').toUpperCase()
     const body = method === 'GET' || method === 'HEAD'
       ? undefined
-      : typeof payload.body === 'string' ? payload.body : undefined
+      : Buffer.isBuffer(payload.bodyBuffer)
+        ? payload.bodyBuffer
+        : typeof payload.body === 'string' ? payload.body : undefined
     let requestSummary: Record<string, unknown> = {}
     try {
-      const parsedBody = body ? JSON.parse(body) : {}
+      const parsedBody = typeof body === 'string' ? JSON.parse(body) : {}
       requestSummary = {
         model: parsedBody.model,
         size: parsedBody.size,
@@ -192,6 +198,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     } catch {
       requestSummary = { bodyLength: body?.length ?? 0 }
     }
+    if (Buffer.isBuffer(body)) requestSummary = { bodyLength: body.length, multipart: true }
     const payloadTimeoutMs = Number(payload.timeoutMs)
     const timeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0 ? Math.max(30_000, payloadTimeoutMs) : 0
     const timeout = timeoutMs > 0
@@ -278,7 +285,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.49',
+        version: '0.6.50',
         pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
       })
@@ -350,7 +357,20 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
         sendJson(res, 200, { ...existing, images: undefined })
         return
       }
-      const payload = JSON.parse(await readRequestBody(req))
+      const requestUrl = new URL(req.url || '', 'http://127.0.0.1')
+      const rawBody = requestUrl.searchParams.get('raw') === '1'
+      const payload = rawBody
+        ? {
+            url: requestUrl.searchParams.get('url') || '',
+            method: requestUrl.searchParams.get('method') || 'POST',
+            timeoutMs: requestUrl.searchParams.get('timeoutMs'),
+            headers: {
+              ...JSON.parse(decodeURIComponent(String(req.headers['x-job-forward-headers'] || '%7B%7D'))),
+              ...(typeof req.headers['content-type'] === 'string' ? { 'content-type': req.headers['content-type'] } : {}),
+            },
+            bodyBuffer: await readRequestBuffer(req),
+          }
+        : JSON.parse(await readRequestBody(req))
       sendJson(res, 202, startJob(id, payload))
       return
     }

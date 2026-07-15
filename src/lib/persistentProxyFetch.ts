@@ -47,13 +47,17 @@ function getPersistentProxyUrl(url: string) {
 
 function canUsePersistentProxyJob(url: string, init: RequestInit, jobId?: string) {
   const method = (init.method ?? 'GET').toUpperCase()
+  const supportedBody =
+    typeof init.body === 'string' ||
+    init.body == null ||
+    (typeof FormData !== 'undefined' && init.body instanceof FormData)
   return Boolean(
     jobId &&
     canReachPersistentProxyJobServer() &&
     isApiProxyAvailable() &&
     method === 'POST' &&
     getPersistentProxyUrl(url) &&
-    (typeof init.body === 'string' || init.body == null),
+    supportedBody,
   )
 }
 
@@ -151,27 +155,37 @@ export async function fetchWithPersistentProxy(url: string, init: RequestInit, j
   const persistentProxyUrl = getPersistentProxyUrl(url)
   if (!persistentProxyUrl) return fetch(url, init)
 
-  const jobPayload = JSON.stringify({
-    url: persistentProxyUrl,
-    method: init.method ?? 'POST',
-    headers: headersToRecord(init.headers),
-    body: typeof init.body === 'string' ? init.body : '',
-    timeoutMs: typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds)
-      ? Math.max(30_000, timeoutSeconds * 1000)
-      : undefined,
-  })
+  const timeoutMs = typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds)
+    ? Math.max(30_000, timeoutSeconds * 1000)
+    : undefined
+  const isMultipart = typeof FormData !== 'undefined' && init.body instanceof FormData
   addJobLog('info', 'frontend:job-start', '提交任务代理', {
     jobId,
     url: persistentProxyUrl,
     method: init.method ?? 'POST',
-    bodyLength: typeof init.body === 'string' ? init.body.length : 0,
+    bodyLength: typeof init.body === 'string' ? init.body.length : undefined,
+    multipart: isMultipart,
     timeoutSeconds,
   })
-  const response = await fetch(`/api-jobs/${encodeURIComponent(jobId!)}`, {
+  const jobPayload = isMultipart
+    ? init.body
+    : JSON.stringify({
+        url: persistentProxyUrl,
+        method: init.method ?? 'POST',
+        headers: headersToRecord(init.headers),
+        body: typeof init.body === 'string' ? init.body : '',
+        timeoutMs,
+      })
+  const jobUrl = isMultipart
+    ? `/api-jobs/${encodeURIComponent(jobId!)}?raw=1&url=${encodeURIComponent(persistentProxyUrl)}&method=${encodeURIComponent(init.method ?? 'POST')}${timeoutMs ? `&timeoutMs=${timeoutMs}` : ''}`
+    : `/api-jobs/${encodeURIComponent(jobId!)}`
+  const response = await fetch(jobUrl, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: isMultipart
+      ? { 'x-job-forward-headers': encodeURIComponent(JSON.stringify(headersToRecord(init.headers))) }
+      : { 'content-type': 'application/json' },
     body: jobPayload,
-    keepalive: jobPayload.length <= 60_000,
+    keepalive: !isMultipart && typeof jobPayload === 'string' && jobPayload.length <= 60_000,
   })
 
   if (!response.ok) {

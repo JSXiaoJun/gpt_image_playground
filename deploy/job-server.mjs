@@ -46,13 +46,17 @@ function sendJson(res, status, data) {
   res.end(body)
 }
 
-function readBody(req) {
+function readBodyBuffer(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
     req.on('data', (chunk) => chunks.push(chunk))
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
+}
+
+async function readBody(req) {
+  return (await readBodyBuffer(req)).toString('utf8')
 }
 
 function getProxyBaseUrl() {
@@ -202,10 +206,12 @@ function startJob(id, payload) {
   const method = String(payload.method || 'POST').toUpperCase()
   const body = method === 'GET' || method === 'HEAD'
     ? undefined
-    : typeof payload.body === 'string' ? payload.body : undefined
+    : Buffer.isBuffer(payload.bodyBuffer)
+      ? payload.bodyBuffer
+      : typeof payload.body === 'string' ? payload.body : undefined
   let requestSummary = {}
   try {
-    const parsedBody = body ? JSON.parse(body) : {}
+    const parsedBody = typeof body === 'string' ? JSON.parse(body) : {}
     requestSummary = {
       model: parsedBody.model,
       size: parsedBody.size,
@@ -218,6 +224,7 @@ function startJob(id, payload) {
   } catch {
     requestSummary = { bodyLength: body?.length ?? 0 }
   }
+  if (Buffer.isBuffer(body)) requestSummary = { bodyLength: body.length, multipart: true }
   const payloadTimeoutMs = Number(payload.timeoutMs)
   const effectiveUpstreamTimeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0
     ? Math.max(30 * 1000, payloadTimeoutMs)
@@ -350,7 +357,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.49',
+        version: '0.6.50',
         upstreamTimeoutMs,
         pendingTimeoutMs,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
@@ -446,7 +453,20 @@ const server = http.createServer(async (req, res) => {
         return
       }
 
-      const payload = JSON.parse(await readBody(req))
+      const requestUrl = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`)
+      const rawBody = requestUrl.searchParams.get('raw') === '1'
+      const payload = rawBody
+        ? {
+            url: requestUrl.searchParams.get('url') || '',
+            method: requestUrl.searchParams.get('method') || 'POST',
+            timeoutMs: requestUrl.searchParams.get('timeoutMs'),
+            headers: {
+              ...normalizeHeaders(JSON.parse(decodeURIComponent(String(req.headers['x-job-forward-headers'] || '%7B%7D')))),
+              ...(typeof req.headers['content-type'] === 'string' ? { 'content-type': req.headers['content-type'] } : {}),
+            },
+            bodyBuffer: await readBodyBuffer(req),
+          }
+        : JSON.parse(await readBody(req))
       const job = startJob(id, payload)
       sendJson(res, 202, publicJob(job))
       return

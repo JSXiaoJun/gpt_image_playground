@@ -26,6 +26,9 @@ interface GeminiResponse {
       parts?: GeminiPart[]
     }
   }>
+  data?: Array<{
+    url?: string
+  }>
   promptFeedback?: {
     blockReason?: string
   }
@@ -128,9 +131,13 @@ function getOutputFormatFromMime(mime: string): CallApiResult['actualParams'] {
 function extractGeminiImages(payload: GeminiResponse, fallbackMime: string): CallApiResult {
   const parts = payload.candidates?.flatMap((candidate) => candidate.content?.parts ?? []) ?? []
   const imageParts = parts.filter((part) => part.inlineData?.data)
-  const images = imageParts.map((part) =>
-    normalizeBase64Image(part.inlineData?.data ?? '', part.inlineData?.mimeType || fallbackMime),
-  )
+  const proxiedImages = payload.data?.flatMap((item) => item.url ? [item.url] : []) ?? []
+  const images = [
+    ...imageParts.map((part) =>
+      normalizeBase64Image(part.inlineData?.data ?? '', part.inlineData?.mimeType || fallbackMime),
+    ),
+    ...proxiedImages,
+  ]
 
   if (!images.length) {
     const blockReason = payload.promptFeedback?.blockReason
@@ -139,7 +146,10 @@ function extractGeminiImages(payload: GeminiResponse, fallbackMime: string): Cal
     throw err
   }
 
-  const actualParamsList = imageParts.map((part) => getOutputFormatFromMime(part.inlineData?.mimeType || fallbackMime))
+  const actualParamsList = [
+    ...imageParts.map((part) => getOutputFormatFromMime(part.inlineData?.mimeType || fallbackMime)),
+    ...proxiedImages.map(() => undefined),
+  ]
   return {
     images,
     actualParams: actualParamsList[0],
