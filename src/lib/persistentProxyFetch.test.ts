@@ -3,6 +3,7 @@ import { fetchWithPersistentProxy, readPersistentProxyJob } from './persistentPr
 
 describe('persistent proxy job reads', () => {
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
   })
@@ -23,7 +24,7 @@ describe('persistent proxy job reads', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('/api-jobs/task-1?summary=1', {
       cache: 'no-store',
-      signal: undefined,
+      signal: expect.any(AbortSignal),
     })
     expect(job).not.toBeNull()
     expect(job!.status).toBe('done')
@@ -81,6 +82,43 @@ describe('persistent proxy job reads', () => {
     })
     await expect(response.json()).resolves.toEqual({
       data: [{ url: '/api-jobs/task-edit/images/0' }],
+    })
+  })
+
+  it('continues polling after a stuck status request times out', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('VITE_DOCKER_DEPLOYMENT', 'true')
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'task-retry',
+        status: 'running',
+        phase: 'pending',
+      }), { status: 202 }))
+      .mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit).signal
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'task-retry',
+        status: 'done',
+        phase: 'done',
+        imageUrls: ['/api-jobs/task-retry/images/0'],
+      })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const responsePromise = fetchWithPersistentProxy('https://zl.yyapi.cloud/v1/images/generations', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-key' },
+      body: JSON.stringify({ prompt: 'test' }),
+    }, 'task-retry', 600)
+
+    await vi.advanceTimersByTimeAsync(11_000)
+    const response = await responsePromise
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    await expect(response.json()).resolves.toEqual({
+      data: [{ url: '/api-jobs/task-retry/images/0' }],
     })
   })
 })

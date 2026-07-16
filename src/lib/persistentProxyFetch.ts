@@ -21,6 +21,7 @@ export interface PersistentProxyJobResponse {
 
 const JOB_POLL_INTERVAL_MS = 1000
 const JOB_EXISTENCE_CHECK_TIMEOUT_MS = 5000
+const JOB_READ_TIMEOUT_MS = 10_000
 
 function isDockerDeployment() {
   return readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT) === 'true'
@@ -78,9 +79,9 @@ function wait(ms: number, signal?: AbortSignal) {
       return
     }
 
-    const timer = window.setTimeout(resolve, ms)
+    const timer = setTimeout(resolve, ms)
     signal?.addEventListener('abort', () => {
-      window.clearTimeout(timer)
+      clearTimeout(timer)
       reject(new DOMException('Aborted', 'AbortError'))
     }, { once: true })
   })
@@ -88,33 +89,53 @@ function wait(ms: number, signal?: AbortSignal) {
 
 export async function readPersistentProxyJob(jobId: string, signal?: AbortSignal, summaryOnly = false) {
   const query = summaryOnly ? '?summary=1' : ''
-  const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}${query}`, { cache: 'no-store', signal })
-  if (!response.ok) {
-    addJobLog('warn', 'frontend:job-read', '任务代理记录读取失败', { jobId, status: response.status })
-    return null
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(() => controller.abort(new Error('任务代理状态查询超时')), JOB_READ_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(`/api-jobs/${encodeURIComponent(jobId)}${query}`, { cache: 'no-store', signal: controller.signal })
+    if (!response.ok) {
+      addJobLog('warn', 'frontend:job-read', '任务代理记录读取失败', { jobId, status: response.status })
+      return null
+    }
+    const job = await response.json() as PersistentProxyJobResponse
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    if (origin && job.resultUrl?.startsWith('/')) job.resultUrl = new URL(job.resultUrl, origin).toString()
+    if (origin && job.imageUrls?.length) {
+      job.imageUrls = job.imageUrls.map((url) => url.startsWith('/') ? new URL(url, origin).toString() : url)
+    }
+    addJobLog('debug', 'frontend:job-read', '任务代理状态', {
+      jobId,
+      status: job.status,
+      phase: job.phase,
+      upstreamStatus: job.upstreamStatus,
+      upstreamElapsedMs: job.upstreamElapsedMs,
+      responseBytes: job.responseBytes,
+      hasResponse: Boolean(job.response),
+      error: job.error,
+    })
+    return job
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abort)
   }
-  const job = await response.json() as PersistentProxyJobResponse
-  const origin = typeof window !== 'undefined' ? window.location.origin : ''
-  if (origin && job.resultUrl?.startsWith('/')) job.resultUrl = new URL(job.resultUrl, origin).toString()
-  if (origin && job.imageUrls?.length) {
-    job.imageUrls = job.imageUrls.map((url) => url.startsWith('/') ? new URL(url, origin).toString() : url)
-  }
-  addJobLog('debug', 'frontend:job-read', '任务代理状态', {
-    jobId,
-    status: job.status,
-    phase: job.phase,
-    upstreamStatus: job.upstreamStatus,
-    upstreamElapsedMs: job.upstreamElapsedMs,
-    responseBytes: job.responseBytes,
-    hasResponse: Boolean(job.response),
-    error: job.error,
-  })
-  return job
 }
 
 async function pollJob(jobId: string, signal?: AbortSignal): Promise<Response> {
   while (true) {
-    const job = await readPersistentProxyJob(jobId, undefined, true)
+    const job = await readPersistentProxyJob(jobId, signal, true).catch(async (err) => {
+      if (signal?.aborted) throw err
+      addJobLog('warn', 'frontend:job-poll', '任务代理状态查询失败，将继续重试', {
+        jobId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      await wait(JOB_POLL_INTERVAL_MS, signal)
+      return undefined
+    })
+    if (job === undefined) continue
     if (!job) throw new Error('任务代理记录不存在')
 
     if (job.status === 'done') {

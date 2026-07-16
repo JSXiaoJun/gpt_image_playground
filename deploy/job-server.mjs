@@ -359,7 +359,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.51',
+        version: '0.6.52',
         upstreamTimeoutMs,
         pendingTimeoutMs,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
