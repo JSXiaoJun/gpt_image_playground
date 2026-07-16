@@ -33,6 +33,7 @@ COPY --from=build /app/dist /usr/share/nginx/html
 COPY deploy/nginx.conf /etc/nginx/templates/default.conf.template
 COPY deploy/job-server.mjs /app/job-server.mjs
 COPY deploy/job-images.mjs /app/job-images.mjs
+COPY deploy/job-timeouts.mjs /app/job-timeouts.mjs
 COPY deploy/read-upstream-body.mjs /app/read-upstream-body.mjs
 COPY --chmod=755 deploy/migrate-api-env.envsh /docker-entrypoint.d/05-migrate-api-env.envsh
 COPY --chmod=755 deploy/inject-api-url.sh /docker-entrypoint.d/40-inject-api-url.sh

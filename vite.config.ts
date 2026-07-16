@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { readFileSync } from 'fs'
 import { normalizeDevProxyConfig } from './src/lib/devProxy'
 import { extractJobImages, getJobImageUrls } from './deploy/job-images.mjs'
+import { resolvePendingTimeoutMs } from './deploy/job-timeouts.mjs'
 import { readUpstreamResponseBody } from './deploy/read-upstream-body.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
@@ -201,12 +202,13 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (Buffer.isBuffer(body)) requestSummary = { bodyLength: body.length, multipart: true }
     const payloadTimeoutMs = Number(payload.timeoutMs)
     const timeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0 ? Math.max(30_000, payloadTimeoutMs) : 0
+    const pendingTimeoutMs = resolvePendingTimeoutMs(JOB_PENDING_TIMEOUT_MS, timeoutMs)
     const timeout = timeoutMs > 0
       ? setTimeout(() => controller.abort(new Error(`上游请求超过 ${Math.round(timeoutMs / 1000)} 秒仍未返回`)), timeoutMs)
       : null
     const pendingTimeout = setTimeout(() => {
-      controller.abort(new Error(`上游请求已提交，但 ${Math.round(JOB_PENDING_TIMEOUT_MS / 1000)} 秒内没有返回 HTTP 响应头。NewAPI 后台可能已生成/扣费，但当前 HTTP 连接没有把结果返回给本服务。任务 ID：${id}`))
-    }, JOB_PENDING_TIMEOUT_MS)
+      controller.abort(new Error(`上游请求已提交，但 ${Math.round(pendingTimeoutMs / 1000)} 秒内没有返回 HTTP 响应头。NewAPI 后台可能已生成/扣费，但当前 HTTP 连接没有把结果返回给本服务。任务 ID：${id}`))
+    }, pendingTimeoutMs)
     const heartbeat = setInterval(() => {
       if (job.status !== 'running') return
       addDevJobLog('debug', 'dev:job', '任务仍在等待上游响应', {
@@ -215,7 +217,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
         upstreamStatus: job.upstreamStatus,
       })
     }, 30_000)
-    addDevJobLog('info', 'dev:job', '任务开始', { id, method, timeoutMs, pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS, request: requestSummary })
+    addDevJobLog('info', 'dev:job', '任务开始', { id, method, timeoutMs, pendingTimeoutMs, request: requestSummary })
     fetch(buildTargetUrl(String(payload.url || '')), {
       method,
       headers: payload.headers || {},
@@ -285,7 +287,7 @@ function createDevJobMiddleware(devProxyConfig: ReturnType<typeof loadDevProxyCo
     if (req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.50',
+        version: '0.6.51',
         pendingTimeoutMs: JOB_PENDING_TIMEOUT_MS,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
       })

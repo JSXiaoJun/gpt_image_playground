@@ -1,5 +1,6 @@
 import http from 'node:http'
 import { extractJobImages, getJobImageUrls } from './job-images.mjs'
+import { resolvePendingTimeoutMs } from './job-timeouts.mjs'
 import { readUpstreamResponseBody } from './read-upstream-body.mjs'
 
 const host = process.env.JOB_SERVER_HOST || '127.0.0.1'
@@ -229,18 +230,19 @@ function startJob(id, payload) {
   const effectiveUpstreamTimeoutMs = Number.isFinite(payloadTimeoutMs) && payloadTimeoutMs > 0
     ? Math.max(30 * 1000, payloadTimeoutMs)
     : upstreamTimeoutMs
+  const effectivePendingTimeoutMs = resolvePendingTimeoutMs(pendingTimeoutMs, effectiveUpstreamTimeoutMs)
 
-  addServerLog('info', 'server:job', '任务开始', { id, method, targetUrl, timeoutMs: effectiveUpstreamTimeoutMs, pendingTimeoutMs, request: requestSummary })
+  addServerLog('info', 'server:job', '任务开始', { id, method, targetUrl, timeoutMs: effectiveUpstreamTimeoutMs, pendingTimeoutMs: effectivePendingTimeoutMs, request: requestSummary })
   const upstreamTimeout = effectiveUpstreamTimeoutMs > 0
     ? setTimeout(() => {
         controller.abort(new Error(`上游请求超过 ${Math.round(effectiveUpstreamTimeoutMs / 1000)} 秒仍未返回`))
       }, effectiveUpstreamTimeoutMs)
     : null
-  const pendingTimeout = pendingTimeoutMs > 0
+  const pendingTimeout = effectivePendingTimeoutMs > 0
     ? setTimeout(() => {
         if (job.phase !== 'pending') return
-        controller.abort(new Error(`上游请求已提交，但 ${Math.round(pendingTimeoutMs / 1000)} 秒内没有返回 HTTP 响应头。NewAPI 后台可能已生成/扣费，但当前 HTTP 连接没有把结果返回给本服务。任务 ID：${id}`))
-      }, pendingTimeoutMs)
+        controller.abort(new Error(`上游请求已提交，但 ${Math.round(effectivePendingTimeoutMs / 1000)} 秒内没有返回 HTTP 响应头。NewAPI 后台可能已生成/扣费，但当前 HTTP 连接没有把结果返回给本服务。任务 ID：${id}`))
+      }, effectivePendingTimeoutMs)
     : null
   const heartbeat = setInterval(() => {
     if (job.status !== 'running') return
@@ -357,7 +359,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/api-jobs-health')) {
       sendJson(res, 200, {
         ok: true,
-        version: '0.6.50',
+        version: '0.6.51',
         upstreamTimeoutMs,
         pendingTimeoutMs,
         runningJobs: Array.from(jobs.values()).filter((job) => job.status === 'running').length,
