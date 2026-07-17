@@ -17,7 +17,7 @@ import type {
   ResponsesOutputItem,
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_API_TIMEOUT, DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -584,8 +584,24 @@ export function migratePersistedState(persistedState: unknown): unknown {
   const params = isRecord(persistedState.params) && persistedState.params.size === 'auto'
     ? { ...persistedState.params, size: DEFAULT_PARAMS.size }
     : persistedState.params
+  const settings = isRecord(persistedState.settings)
+    ? {
+        ...persistedState.settings,
+        ...(persistedState.settings.timeout === 600 ? { timeout: DEFAULT_API_TIMEOUT } : {}),
+        ...(Array.isArray(persistedState.settings.profiles)
+          ? {
+              profiles: persistedState.settings.profiles.map((profile) =>
+                isRecord(profile) && profile.timeout === 600
+                  ? { ...profile, timeout: DEFAULT_API_TIMEOUT }
+                  : profile,
+              ),
+            }
+          : {}),
+      }
+    : persistedState.settings
   return {
     ...persistedState,
+    settings,
     params,
     agentConversations: stripPersistedAgentConversations(persistedState.agentConversations),
   }
@@ -1638,7 +1654,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gpt-image-playground',
-      version: 2,
+      version: 3,
       migrate: (persistedState) => migratePersistedState(persistedState),
       partialize: getPersistedState,
       merge: mergePersistedState,

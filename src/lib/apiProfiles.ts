@@ -37,7 +37,7 @@ export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-image'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
-export const DEFAULT_API_TIMEOUT = 600
+export const DEFAULT_API_TIMEOUT = 900
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal', 'gemini'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {

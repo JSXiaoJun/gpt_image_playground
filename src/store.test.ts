@@ -762,6 +762,24 @@ describe('agent conversation persistence', () => {
     expect(serializedMigrated).not.toContain('legacy-base64')
     expect(serializedMigrated).toContain('image_generation_call')
   })
+
+  it('updates the previous default API timeout when migrating persisted settings', () => {
+    const migrated = migratePersistedState({
+      settings: {
+        timeout: 600,
+        profiles: [
+          { id: 'default-timeout', timeout: 600 },
+          { id: 'custom-timeout', timeout: 300 },
+        ],
+      },
+    }) as { settings: { timeout: number, profiles: Array<{ id: string, timeout: number }> } }
+
+    expect(migrated.settings.timeout).toBe(900)
+    expect(migrated.settings.profiles).toEqual([
+      { id: 'default-timeout', timeout: 900 },
+      { id: 'custom-timeout', timeout: 300 },
+    ])
+  })
 })
 
 describe('fal task recovery', () => {
