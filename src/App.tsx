@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
@@ -6,7 +6,7 @@ import { isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/apiProf
 import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
-import Header from './components/Header'
+import Header, { type WorkspaceMode } from './components/Header'
 import SearchBar from './components/SearchBar'
 import TaskGrid from './components/TaskGrid'
 // Agent 模式暂时隐藏，保留文件但不挂载入口。
@@ -21,10 +21,14 @@ import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
+import VideoWorkspace from './components/VideoWorkspace'
 
 let customProviderConfigUrlImportStarted = false
 
 export default function App() {
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(() =>
+    localStorage.getItem('gpt-image-playground-workspace-mode') === 'video' ? 'video' : 'image',
+  )
   const setSettings = useStore((s) => s.setSettings)
   const setAppMode = useStore((s) => s.setAppMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
@@ -109,6 +113,10 @@ export default function App() {
   }, [setAppMode])
 
   useEffect(() => {
+    localStorage.setItem('gpt-image-playground-workspace-mode', workspaceMode)
+  }, [workspaceMode])
+
+  useEffect(() => {
     if (!hasRunningTasks) return
 
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -133,17 +141,23 @@ export default function App() {
 
   return (
     <>
-      <Header />
-      {/* Agent 模式暂时注释掉，只保留画廊模式。 */}
-      <main data-home-main data-drag-select-surface className="pb-48">
-        <div className="safe-area-x max-w-7xl mx-auto">
-          <SearchBar />
-          {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
-        </div>
-      </main>
-      <InputBar />
-      <DetailModal />
-      <Lightbox />
+      <Header workspaceMode={workspaceMode} onWorkspaceModeChange={setWorkspaceMode} />
+      {workspaceMode === 'video' ? (
+        <VideoWorkspace />
+      ) : (
+        <>
+          {/* Agent 模式暂时注释掉，只保留画廊模式。 */}
+          <main data-home-main data-drag-select-surface className="pb-48">
+            <div className="safe-area-x max-w-7xl mx-auto">
+              <SearchBar />
+              {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
+            </div>
+          </main>
+          <InputBar />
+          <DetailModal />
+          <Lightbox />
+        </>
+      )}
       <SettingsModal />
       <ConfirmDialog />
       <FavoriteCollectionPickerModal />

@@ -7,7 +7,14 @@ import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
 import JobLogsModal from './JobLogsModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
-import { CodeIcon, EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
+import { CodeIcon, EditIcon, HelpCircleIcon, HistoryIcon, ImageIcon, InstallIcon, SettingsIcon, VideoIcon } from './icons'
+
+export type WorkspaceMode = 'image' | 'video'
+
+interface HeaderProps {
+  workspaceMode: WorkspaceMode
+  onWorkspaceModeChange: (mode: WorkspaceMode) => void
+}
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -22,7 +29,7 @@ function isInstalledPwa() {
   return window.matchMedia('(display-mode: standalone)').matches || nav.standalone === true
 }
 
-export default function Header() {
+export default function Header({ workspaceMode, onWorkspaceModeChange }: HeaderProps) {
   const appMode = useStore((s) => s.appMode)
   const setAppMode = useStore((s) => s.setAppMode)
   const setShowSettings = useStore((s) => s.setShowSettings)
@@ -236,6 +243,30 @@ export default function Header() {
             </div>
           )}
           <div className="flex items-center gap-1 shrink-0">
+            <div className="mr-1 flex h-9 items-center rounded-lg border border-gray-200 bg-gray-100/80 p-0.5 dark:border-white/[0.08] dark:bg-white/[0.04]">
+              <button
+                type="button"
+                onClick={() => onWorkspaceModeChange('image')}
+                aria-label="图片工作台"
+                aria-pressed={workspaceMode === 'image'}
+                title="图片工作台"
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs transition-all sm:px-3 ${workspaceMode === 'image' ? 'bg-white font-medium text-gray-900 shadow-sm dark:bg-white/10 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}`}
+              >
+                <ImageIcon className="h-4 w-4" />
+                <span className="hidden sm:inline">图片</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onWorkspaceModeChange('video')}
+                aria-label="视频工作台"
+                aria-pressed={workspaceMode === 'video'}
+                title="视频工作台"
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs transition-all sm:px-3 ${workspaceMode === 'video' ? 'bg-white font-medium text-gray-900 shadow-sm dark:bg-white/10 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}`}
+              >
+                <VideoIcon className="h-4 w-4" />
+                <span className="hidden sm:inline">视频</span>
+              </button>
+            </div>
             {!isPwaInstalled && (
               <div
                 className="relative"

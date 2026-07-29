@@ -1,0 +1,57 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createVideoTask, downloadVideoContent, fetchVideoModels } from './videoApi'
+
+afterEach(() => vi.unstubAllGlobals())
+
+describe('videoApi', () => {
+  it('maps the create payload and preserves task_id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ task_id: 'task-public', id: 'internal' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await createVideoTask('https://zl.yyapi.cloud/', 'sk-test', {
+      model: 'gemini-omni-flash',
+      prompt: '电影感运镜',
+      aspectRatio: '16:9',
+      duration: 8,
+      resolution: '720p',
+      generateAudio: true,
+      imageUrls: ['https://example.com/a.png', 'https://example.com/b.png'],
+    })
+
+    expect(result.taskId).toBe('task-public')
+    expect(fetchMock).toHaveBeenCalledWith('https://zl.yyapi.cloud/v1/videos', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'gemini-omni-flash',
+        prompt: '电影感运镜',
+        aspect_ratio: '16:9',
+        duration: 8,
+        resolution: '720p',
+        generate_audio: true,
+        image_urls: ['https://example.com/a.png', 'https://example.com/b.png'],
+      }),
+    }))
+  })
+
+  it('loads the live model list', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: 'sora2', owned_by: 'test' }, {}],
+    }), { status: 200 })))
+
+    await expect(fetchVideoModels('https://zl.yyapi.cloud', 'sk-test')).resolves.toEqual([
+      { id: 'sora2', ownedBy: 'test' },
+    ])
+  })
+
+  it('rejects JSON returned from the content endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })))
+
+    await expect(downloadVideoContent('https://zl.yyapi.cloud', 'sk-test', 'task-1')).rejects.toThrow('视频响应类型无效')
+  })
+})
