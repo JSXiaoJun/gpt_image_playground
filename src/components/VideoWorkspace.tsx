@@ -100,7 +100,7 @@ function readConfig(): VideoConfig {
     aspectRatio: typeof config.aspectRatio === 'string' ? config.aspectRatio : DEFAULT_CONFIG.aspectRatio,
     duration: typeof config.duration === 'number' ? config.duration : DEFAULT_CONFIG.duration,
     resolution: typeof config.resolution === 'string' ? config.resolution : DEFAULT_CONFIG.resolution,
-    generateAudio: typeof config.generateAudio === 'boolean' ? config.generateAudio : DEFAULT_CONFIG.generateAudio,
+    generateAudio: true,
     count: [1, 2, 3, 4].includes(config.count ?? 0) ? config.count! : 1,
   }
 }
@@ -349,7 +349,7 @@ export default function VideoWorkspace() {
         aspectRatio: config.aspectRatio,
         duration: config.duration,
         resolution: config.resolution,
-        generateAudio: config.generateAudio,
+        generateAudio: true,
         imageUrls,
         referenceVideo,
         status: 'submitting',
@@ -365,7 +365,7 @@ export default function VideoWorkspace() {
           aspectRatio: config.aspectRatio === '自动' ? undefined : config.aspectRatio,
           duration: config.duration || undefined,
           resolution: config.resolution === '自动' ? undefined : config.resolution,
-          generateAudio: config.generateAudio,
+          generateAudio: true,
           imageUrls,
           referenceVideo: referenceVideo || undefined,
         })
@@ -399,7 +399,7 @@ export default function VideoWorkspace() {
       aspectRatio: task.aspectRatio,
       duration: task.duration,
       resolution: task.resolution,
-      generateAudio: task.generateAudio,
+      generateAudio: true,
       count: 1,
     }))
     setImageUrlText(task.imageUrls.join('\n'))
@@ -526,7 +526,6 @@ export default function VideoWorkspace() {
             <label><span className="mb-1 block text-[11px] text-gray-400">时长</span><select value={config.duration} onChange={(e) => setConfig({ ...config, duration: Number(e.target.value) })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.durations.map((value) => <option key={value} value={value}>{value ? `${value}s` : '自动'}</option>)}</select></label>
             <label><span className="mb-1 block text-[11px] text-gray-400">分辨率</span><select value={config.resolution} onChange={(e) => setConfig({ ...config, resolution: e.target.value })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.resolutions.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label><span className="mb-1 block text-[11px] text-gray-400">数量</span><select value={config.count} onChange={(e) => setConfig({ ...config, count: Number(e.target.value) })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
-            <button type="button" onClick={() => setConfig({ ...config, generateAudio: !config.generateAudio })} aria-pressed={config.generateAudio} className={`h-10 rounded-lg border px-3 text-xs transition ${config.generateAudio ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300' : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-white/[0.08] dark:bg-white/[0.04]'}`}>声音 {config.generateAudio ? '开' : '关'}</button>
             <button type="button" onClick={() => setShowReferences(!showReferences)} className={`h-10 rounded-lg border px-3 text-xs transition ${showReferences ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300' : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-white/[0.08] dark:bg-white/[0.04]'}`}>参考素材{imageUrls.length || referenceVideo ? ` · ${imageUrls.length + (referenceVideo ? 1 : 0)}` : ''}</button>
             <button type="button" onClick={() => setShowConfig(!showConfig)} title="视频接口配置" aria-label="视频接口配置" className={`flex h-10 w-10 items-center justify-center rounded-lg border transition ${showConfig ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10' : 'border-gray-200 text-gray-500 dark:border-white/[0.08]'}`}><SettingsIcon className="h-4 w-4" /></button>
             <button type="button" onClick={() => void submit()} disabled={submitting} className="ml-auto flex h-10 min-w-[92px] items-center justify-center rounded-lg bg-blue-600 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting ? '提交中' : '生成视频'}</button>
