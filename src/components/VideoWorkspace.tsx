@@ -7,6 +7,7 @@ import {
   getVideoTaskError,
 } from '../lib/videoApi'
 import { getVideoDuration } from '../lib/videoDuration'
+import { uploadR2Asset } from '../lib/r2AssetUpload'
 import { DownloadIcon, RefreshIcon, SettingsIcon, TrashIcon } from './icons'
 
 type VideoTaskStatus = 'submitting' | 'queued' | 'processing' | 'completed' | 'failed'
@@ -154,6 +155,7 @@ export default function VideoWorkspace() {
   const [showReferences, setShowReferences] = useState(false)
   const [loadingModels, setLoadingModels] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'error' | 'success' } | null>(null)
   const [videoPreview, setVideoPreview] = useState<{ taskId: string; url: string } | null>(null)
   const pollingRef = useRef(new Set<string>())
@@ -162,6 +164,36 @@ export default function VideoWorkspace() {
 
   const capabilities = MODEL_CAPABILITIES[config.model] ?? DEFAULT_CAPABILITIES
   const imageUrls = imageUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
+
+  const uploadAsset = async (file: File, kind: 'image' | 'video') => {
+    if (kind === 'image' && imageUrls.length >= capabilities.maxImages) {
+      setMessage({ text: `当前模型最多支持 ${capabilities.maxImages} 张参考图`, type: 'error' })
+      return
+    }
+    if (kind === 'video' && !capabilities.referenceVideo) {
+      setMessage({ text: '当前模型不支持参考视频', type: 'error' })
+      return
+    }
+
+    setUploadingAsset(kind)
+    try {
+      if (kind === 'video') {
+        const duration = await getVideoDuration(file)
+        if (duration > MAX_REFERENCE_VIDEO_DURATION_SECONDS) {
+          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，不能超过 30 秒`, type: 'error' })
+          return
+        }
+      }
+      const url = await uploadR2Asset(file)
+      if (kind === 'image') setImageUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
+      else setReferenceVideo(url)
+      setMessage({ text: `${kind === 'image' ? '图片' : '视频'}上传成功`, type: 'success' })
+    } catch (err) {
+      setMessage({ text: err instanceof Error ? err.message : '上传失败', type: 'error' })
+    } finally {
+      setUploadingAsset(null)
+    }
+  }
 
   useEffect(() => {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config))
@@ -477,8 +509,14 @@ export default function VideoWorkspace() {
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') void submit() }} placeholder="描述镜头、主体动作、场景和风格…" rows={2} className="w-full resize-none bg-transparent px-1 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400 dark:text-white" />
           {showReferences && (
             <div className="mt-2 grid gap-2 border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:grid-cols-2">
-              <label><span className="mb-1 block text-[11px] text-gray-400">参考图片 URL（每行一个，最多 {capabilities.maxImages} 张）</span><textarea value={imageUrlText} onChange={(e) => setImageUrlText(e.target.value)} disabled={!capabilities.maxImages} rows={2} placeholder="https://example.com/reference.png" className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
-              <label><span className="mb-1 block text-[11px] text-gray-400">参考视频 URL（最长 30 秒）</span><input value={referenceVideo} onChange={(e) => setReferenceVideo(e.target.value)} disabled={!capabilities.referenceVideo} placeholder={capabilities.referenceVideo ? 'https://example.com/source.mp4' : '当前模型不支持'} className="h-[58px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+              <div>
+                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考图片 URL（每行一个，最多 {capabilities.maxImages} 张）</span><textarea value={imageUrlText} onChange={(e) => setImageUrlText(e.target.value)} disabled={!capabilities.maxImages} rows={2} placeholder="https://example.com/reference.png" className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片到 R2'}</label>
+              </div>
+              <div>
+                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考视频 URL（最长 30 秒）</span><input value={referenceVideo} onChange={(e) => setReferenceVideo(e.target.value)} disabled={!capabilities.referenceVideo} placeholder={capabilities.referenceVideo ? 'https://example.com/source.mp4' : '当前模型不支持'} className="h-[58px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={!capabilities.referenceVideo || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频到 R2'}</label>
+              </div>
             </div>
           )}
           <div className="mt-3 flex flex-wrap items-end gap-2">

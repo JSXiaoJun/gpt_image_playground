@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gpt-image-assets-api",
+  "main": "workers/r2-assets.js",
+  "compatibility_date": "2026-05-07",
+  "r2_buckets": [
+    {
+      "binding": "ASSETS_BUCKET",
+      "bucket_name": "gpt-image-playground-assets"
+    }
+  ]
+}

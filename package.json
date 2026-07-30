@@ -8,6 +8,7 @@
     "mock:api": "node scripts/mock-image-api.mjs",
     "build": "tsc -b && vite build",
     "deploy:cf": "npm run build && wrangler deploy",
+    "deploy:r2-worker": "wrangler deploy --config wrangler.r2-assets.jsonc",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
