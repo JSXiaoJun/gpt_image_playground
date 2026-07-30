@@ -285,6 +285,7 @@ export default function VideoWorkspace() {
 
   useEffect(() => {
     const next = MODEL_CAPABILITIES[config.model] ?? DEFAULT_CAPABILITIES
+    if (!next.referenceVideo) setReferenceVideo('')
     setConfig((current) => ({
       ...current,
       aspectRatio: next.ratios.includes(current.aspectRatio) ? current.aspectRatio : next.ratios[0],
@@ -511,12 +512,12 @@ export default function VideoWorkspace() {
             <div className="mt-2 grid gap-2 border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:grid-cols-2">
               <div>
                 <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考图片 URL（每行一个，最多 {capabilities.maxImages} 张）</span><textarea value={imageUrlText} onChange={(e) => setImageUrlText(e.target.value)} disabled={!capabilities.maxImages} rows={2} placeholder="https://example.com/reference.png" className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片到 R2'}</label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
               </div>
-              <div>
-                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考视频 URL（最长 30 秒）</span><input value={referenceVideo} onChange={(e) => setReferenceVideo(e.target.value)} disabled={!capabilities.referenceVideo} placeholder={capabilities.referenceVideo ? 'https://example.com/source.mp4' : '当前模型不支持'} className="h-[58px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={!capabilities.referenceVideo || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频到 R2'}</label>
-              </div>
+              {capabilities.referenceVideo && <div>
+                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考视频 URL（最长 30 秒）</span><input value={referenceVideo} onChange={(e) => setReferenceVideo(e.target.value)} placeholder="https://example.com/source.mp4" className="h-[58px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
+              </div>}
             </div>
           )}
           <div className="mt-3 flex flex-wrap items-end gap-2">
