@@ -46,6 +46,36 @@ describe('videoApi', () => {
     ])
   })
 
+  it('maps manxue-933 reference audio URLs', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ task_id: 'task-933' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createVideoTask('https://zl.yyapi.cloud', 'sk-test', {
+      model: 'manxue-933',
+      prompt: '电影感角色短片',
+      duration: 15,
+      generateAudio: true,
+      imageUrls: ['https://example.com/main.png'],
+      referenceVideo: 'https://example.com/reference.mp4',
+      audioUrls: ['https://example.com/voice.mp3'],
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith('https://zl.yyapi.cloud/v1/videos', expect.objectContaining({
+      body: JSON.stringify({
+        model: 'manxue-933',
+        prompt: '电影感角色短片',
+        seconds: 15,
+        generate_audio: true,
+        image_url: 'https://example.com/main.png',
+        reference_videos: ['https://example.com/reference.mp4'],
+        audio_urls: ['https://example.com/voice.mp3'],
+      }),
+    }))
+  })
+
   it('rejects JSON returned from the content endpoint', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', {
       status: 200,

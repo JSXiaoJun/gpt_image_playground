@@ -9,10 +9,17 @@ const ALLOWED_TYPES = new Set([
   'video/mp4',
   'video/webm',
   'video/quicktime',
+  'audio/mpeg',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/mp4',
+  'audio/x-m4a',
+  'audio/ogg',
+  'audio/aac',
 ])
 
 export async function uploadR2Asset(file: File, signal?: AbortSignal) {
-  if (!ALLOWED_TYPES.has(file.type)) throw new Error('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM 或 MOV 文件')
+  if (!ALLOWED_TYPES.has(file.type)) throw new Error('不支持当前图片、视频或音频格式')
   if (file.size <= 0 || file.size > MAX_R2_UPLOAD_BYTES) throw new Error('文件为空或超过 100 MB 限制')
 
   const response = await fetch(`${R2_ASSET_WORKER_URL}/upload`, {

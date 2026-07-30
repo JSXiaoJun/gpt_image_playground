@@ -12,6 +12,7 @@ export interface CreateVideoInput {
   generateAudio?: boolean
   imageUrls?: string[]
   referenceVideo?: string
+  audioUrls?: string[]
 }
 
 export interface VideoApiTask {
@@ -85,6 +86,7 @@ export async function createVideoTask(baseUrl: string, apiKey: string, input: Cr
         model: input.model,
         prompt: input.prompt,
         ...(input.duration ? { duration: input.duration } : {}),
+        ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
         ...(input.imageUrls?.length ? { images: input.imageUrls } : {}),
         metadata: {
           ...(input.aspectRatio ? { ratio: input.aspectRatio } : {}),
@@ -98,12 +100,18 @@ export async function createVideoTask(baseUrl: string, apiKey: string, input: Cr
         ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
         ...(input.duration ? { seconds: input.duration } : {}),
         ...(input.resolution ? { resolution: input.resolution } : {}),
+        ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
         ...(input.imageUrls?.[0] ? { image_url: input.imageUrls[0] } : {}),
         ...(input.imageUrls && input.imageUrls.length > 1 ? { reference_image_urls: input.imageUrls.slice(1) } : {}),
         ...(input.referenceVideo ? { reference_videos: [input.referenceVideo] } : {}),
+        ...(input.audioUrls?.length ? { audio_urls: input.audioUrls } : {}),
       }
     : input.model === 'grok-imagine-1.0-video' || input.model === 'grok-imagine-video-1.5-preview'
-    ? { model: input.model, prompt: input.prompt }
+    ? {
+        model: input.model,
+        prompt: input.prompt,
+        ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
+      }
     : commonBody
   const task = await fetchJson<VideoApiTask>(getUrl(baseUrl, '/v1/videos'), {
     method: 'POST',

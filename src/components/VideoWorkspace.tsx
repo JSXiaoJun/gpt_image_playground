@@ -6,7 +6,7 @@ import {
   fetchVideoTask,
   getVideoTaskError,
 } from '../lib/videoApi'
-import { getVideoDuration } from '../lib/videoDuration'
+import { getAudioDuration, getVideoDuration } from '../lib/videoDuration'
 import { uploadR2Asset } from '../lib/r2AssetUpload'
 import { DownloadIcon, RefreshIcon, SettingsIcon, TrashIcon } from './icons'
 
@@ -23,6 +23,7 @@ interface VideoTaskRecord {
   generateAudio: boolean
   imageUrls: string[]
   referenceVideo: string
+  audioUrls?: string[]
   status: VideoTaskStatus
   progress: number
   error?: string
@@ -46,6 +47,7 @@ interface ModelCapabilities {
   resolutions: string[]
   maxImages: number
   referenceVideo: boolean
+  maxAudios?: number
   experimental?: boolean
 }
 
@@ -74,7 +76,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
   'gemini-omni-flash': { ratios: ['16:9', '9:16'], durations: [4, 6, 8, 10], resolutions: ['720p', '1080p'], maxImages: 5, referenceVideo: true },
   sora2: { ratios: ['16:9', '9:16'], durations: [4, 8, 12], resolutions: ['720p'], maxImages: 1, referenceVideo: false, experimental: true },
   'veo31-fast': { ratios: ['16:9', '9:16'], durations: [4, 6, 8], resolutions: ['720p', '1080p'], maxImages: 2, referenceVideo: false, experimental: true },
-  'manxue-933': { ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], durations: [15], resolutions: ['720p'], maxImages: 9, referenceVideo: true, experimental: true },
+  'manxue-933': { ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], durations: [15], resolutions: ['720p'], maxImages: 9, referenceVideo: true, maxAudios: 3, experimental: true },
   'manxue-900': { ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], durations: Array.from({ length: 11 }, (_, idx) => idx + 5), resolutions: ['720p'], maxImages: 9, referenceVideo: false, experimental: true },
   'grok-imagine-1.0-video': { ratios: ['自动'], durations: [0], resolutions: ['自动'], maxImages: 0, referenceVideo: false, experimental: true },
   'grok-imagine-video-1.5-fast': { ratios: ['16:9', '9:16'], durations: [10], resolutions: ['720p'], maxImages: 5, referenceVideo: false, experimental: true },
@@ -149,13 +151,13 @@ export default function VideoWorkspace() {
   const [prompt, setPrompt] = useState('')
   const [imageUrlText, setImageUrlText] = useState('')
   const [referenceVideo, setReferenceVideo] = useState('')
+  const [audioUrlText, setAudioUrlText] = useState('')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | 'running' | 'completed' | 'failed'>('all')
   const [showConfig, setShowConfig] = useState(false)
-  const [showReferences, setShowReferences] = useState(false)
   const [loadingModels, setLoadingModels] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | null>(null)
+  const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | 'audio' | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'error' | 'success' } | null>(null)
   const [videoPreview, setVideoPreview] = useState<{ taskId: string; url: string } | null>(null)
   const pollingRef = useRef(new Set<string>())
@@ -164,8 +166,9 @@ export default function VideoWorkspace() {
 
   const capabilities = MODEL_CAPABILITIES[config.model] ?? DEFAULT_CAPABILITIES
   const imageUrls = imageUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
+  const audioUrls = audioUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
 
-  const uploadAsset = async (file: File, kind: 'image' | 'video') => {
+  const uploadAsset = async (file: File, kind: 'image' | 'video' | 'audio') => {
     if (kind === 'image' && imageUrls.length >= capabilities.maxImages) {
       setMessage({ text: `当前模型最多支持 ${capabilities.maxImages} 张参考图`, type: 'error' })
       return
@@ -174,20 +177,33 @@ export default function VideoWorkspace() {
       setMessage({ text: '当前模型不支持参考视频', type: 'error' })
       return
     }
+    if (kind === 'audio' && (!capabilities.maxAudios || audioUrls.length >= capabilities.maxAudios)) {
+      setMessage({ text: capabilities.maxAudios ? `当前模型最多支持 ${capabilities.maxAudios} 个参考音频` : '当前模型不支持参考音频', type: 'error' })
+      return
+    }
 
     setUploadingAsset(kind)
     try {
       if (kind === 'video') {
         const duration = await getVideoDuration(file)
-        if (duration > MAX_REFERENCE_VIDEO_DURATION_SECONDS) {
-          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，不能超过 30 秒`, type: 'error' })
+        const maxDuration = config.model === 'manxue-933' ? 15 : MAX_REFERENCE_VIDEO_DURATION_SECONDS
+        if (duration > maxDuration || (config.model === 'manxue-933' && duration < 2)) {
+          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${config.model === 'manxue-933' ? '2–15' : '0–30'} 秒内`, type: 'error' })
+          return
+        }
+      }
+      if (kind === 'audio') {
+        const duration = await getAudioDuration(file)
+        if (duration < 2 || duration > 15) {
+          setMessage({ text: `参考音频时长为 ${duration.toFixed(1)} 秒，必须在 2–15 秒内`, type: 'error' })
           return
         }
       }
       const url = await uploadR2Asset(file)
       if (kind === 'image') setImageUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
-      else setReferenceVideo(url)
-      setMessage({ text: `${kind === 'image' ? '图片' : '视频'}上传成功`, type: 'success' })
+      else if (kind === 'video') setReferenceVideo(url)
+      else setAudioUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
+      setMessage({ text: `${kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频'}上传成功`, type: 'success' })
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : '上传失败', type: 'error' })
     } finally {
@@ -286,6 +302,7 @@ export default function VideoWorkspace() {
   useEffect(() => {
     const next = MODEL_CAPABILITIES[config.model] ?? DEFAULT_CAPABILITIES
     if (!next.referenceVideo) setReferenceVideo('')
+    if (!next.maxAudios) setAudioUrlText('')
     setConfig((current) => ({
       ...current,
       aspectRatio: next.ratios.includes(current.aspectRatio) ? current.aspectRatio : next.ratios[0],
@@ -312,7 +329,7 @@ export default function VideoWorkspace() {
       setMessage({ text: '提示词中不要填写时长、时间码或画面比例，请使用下方参数', type: 'error' })
       return
     }
-    if (imageUrls.some((url) => !isPublicUrl(url)) || (referenceVideo && !isPublicUrl(referenceVideo))) {
+    if (imageUrls.some((url) => !isPublicUrl(url)) || audioUrls.some((url) => !isPublicUrl(url)) || (referenceVideo && !isPublicUrl(referenceVideo))) {
       setMessage({ text: '参考素材必须是可公开访问的 HTTP/HTTPS URL', type: 'error' })
       return
     }
@@ -320,18 +337,50 @@ export default function VideoWorkspace() {
       setMessage({ text: `当前模型最多支持 ${capabilities.maxImages} 张参考图`, type: 'error' })
       return
     }
+    if (audioUrls.length > (capabilities.maxAudios ?? 0)) {
+      setMessage({ text: `当前模型最多支持 ${capabilities.maxAudios ?? 0} 个参考音频`, type: 'error' })
+      return
+    }
+    if (config.model === 'manxue-933' && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) > 12) {
+      setMessage({ text: 'manxue-933 的图片、视频和音频合计不能超过 12 个', type: 'error' })
+      return
+    }
 
     if (referenceVideo) {
       setSubmitting(true)
       try {
         const duration = await getVideoDuration(referenceVideo)
-        if (duration > MAX_REFERENCE_VIDEO_DURATION_SECONDS) {
-          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，不能超过 30 秒`, type: 'error' })
+        const maxDuration = config.model === 'manxue-933' ? 15 : MAX_REFERENCE_VIDEO_DURATION_SECONDS
+        if (duration > maxDuration || (config.model === 'manxue-933' && duration < 2)) {
+          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${config.model === 'manxue-933' ? '2–15' : '0–30'} 秒内`, type: 'error' })
           setSubmitting(false)
           return
         }
       } catch (err) {
         setMessage({ text: err instanceof Error ? err.message : '无法读取参考视频时长', type: 'error' })
+        setSubmitting(false)
+        return
+      }
+    }
+
+    if (audioUrls.length) {
+      setSubmitting(true)
+      try {
+        const durations = await Promise.all(audioUrls.map((url) => getAudioDuration(url)))
+        const invalidDuration = durations.find((duration) => duration < 2 || duration > 15)
+        if (invalidDuration !== undefined) {
+          setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，单个音频必须在 2–15 秒内`, type: 'error' })
+          setSubmitting(false)
+          return
+        }
+        const totalDuration = durations.reduce((sum, duration) => sum + duration, 0)
+        if (totalDuration > 15) {
+          setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 15 秒`, type: 'error' })
+          setSubmitting(false)
+          return
+        }
+      } catch (err) {
+        setMessage({ text: err instanceof Error ? err.message : '无法读取参考音频时长', type: 'error' })
         setSubmitting(false)
         return
       }
@@ -352,6 +401,7 @@ export default function VideoWorkspace() {
         generateAudio: true,
         imageUrls,
         referenceVideo,
+        audioUrls,
         status: 'submitting',
         progress: 0,
         createdAt: now,
@@ -368,6 +418,7 @@ export default function VideoWorkspace() {
           generateAudio: true,
           imageUrls,
           referenceVideo: referenceVideo || undefined,
+          audioUrls: audioUrls.length ? audioUrls : undefined,
         })
         updateTask(localId, {
           publicTaskId: result.taskId,
@@ -404,6 +455,7 @@ export default function VideoWorkspace() {
     }))
     setImageUrlText(task.imageUrls.join('\n'))
     setReferenceVideo(task.referenceVideo)
+    setAudioUrlText((task.audioUrls ?? []).join('\n'))
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
   }
 
@@ -508,25 +560,26 @@ export default function VideoWorkspace() {
           )}
           {message && <div className={`mb-3 flex items-center justify-between rounded-lg px-3 py-2 text-xs ${message.type === 'error' ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'}`}><span>{message.text}</span><button type="button" onClick={() => setMessage(null)} className="px-1 text-base leading-none" aria-label="关闭提示">×</button></div>}
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') void submit() }} placeholder="描述镜头、主体动作、场景和风格…" rows={2} className="w-full resize-none bg-transparent px-1 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400 dark:text-white" />
-          {showReferences && (
-            <div className="mt-2 grid gap-2 border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:grid-cols-2">
+          <div className="mt-2 grid gap-2 border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:grid-cols-2">
               <div>
                 <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考图片 URL（每行一个，最多 {capabilities.maxImages} 张）</span><textarea value={imageUrlText} onChange={(e) => setImageUrlText(e.target.value)} disabled={!capabilities.maxImages} rows={2} placeholder="https://example.com/reference.png" className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
               </div>
               {capabilities.referenceVideo && <div>
-                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考视频 URL（最长 30 秒）</span><input value={referenceVideo} onChange={(e) => setReferenceVideo(e.target.value)} placeholder="https://example.com/source.mp4" className="h-[58px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考视频 URL（{config.model === 'manxue-933' ? '2–15' : '最长 30'} 秒）</span><input value={referenceVideo} onChange={(e) => setReferenceVideo(e.target.value)} placeholder="https://example.com/source.mp4" className="h-[58px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
               </div>}
-            </div>
-          )}
+              {capabilities.maxAudios && <div>
+                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考音频 URL（每行一个，最多 {capabilities.maxAudios} 个，总时长 15 秒）</span><textarea value={audioUrlText} onChange={(e) => setAudioUrlText(e.target.value)} rows={2} placeholder="https://example.com/reference.mp3" className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/ogg,audio/aac" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'audio') }} />{uploadingAsset === 'audio' ? '上传中…' : '上传音频'}</label>
+              </div>}
+          </div>
           <div className="mt-3 flex flex-wrap items-end gap-2">
             <label className="min-w-[170px] flex-1 sm:flex-none"><span className="mb-1 block text-[11px] text-gray-400">模型 {capabilities.experimental ? '· 测试中' : ''}</span><select value={config.model} onChange={(e) => setConfig({ ...config, model: e.target.value })} className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none dark:border-white/[0.08] dark:bg-gray-900 dark:text-white"><option value="">选择模型</option>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
             <label><span className="mb-1 block text-[11px] text-gray-400">比例</span><select value={config.aspectRatio} onChange={(e) => setConfig({ ...config, aspectRatio: e.target.value })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.ratios.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label><span className="mb-1 block text-[11px] text-gray-400">时长</span><select value={config.duration} onChange={(e) => setConfig({ ...config, duration: Number(e.target.value) })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.durations.map((value) => <option key={value} value={value}>{value ? `${value}s` : '自动'}</option>)}</select></label>
             <label><span className="mb-1 block text-[11px] text-gray-400">分辨率</span><select value={config.resolution} onChange={(e) => setConfig({ ...config, resolution: e.target.value })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.resolutions.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label><span className="mb-1 block text-[11px] text-gray-400">数量</span><select value={config.count} onChange={(e) => setConfig({ ...config, count: Number(e.target.value) })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
-            <button type="button" onClick={() => setShowReferences(!showReferences)} className={`h-10 rounded-lg border px-3 text-xs transition ${showReferences ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300' : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-white/[0.08] dark:bg-white/[0.04]'}`}>参考素材{imageUrls.length || referenceVideo ? ` · ${imageUrls.length + (referenceVideo ? 1 : 0)}` : ''}</button>
             <button type="button" onClick={() => setShowConfig(!showConfig)} title="视频接口配置" aria-label="视频接口配置" className={`flex h-10 w-10 items-center justify-center rounded-lg border transition ${showConfig ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10' : 'border-gray-200 text-gray-500 dark:border-white/[0.08]'}`}><SettingsIcon className="h-4 w-4" /></button>
             <button type="button" onClick={() => void submit()} disabled={submitting} className="ml-auto flex h-10 min-w-[92px] items-center justify-center rounded-lg bg-blue-600 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting ? '提交中' : '生成视频'}</button>
           </div>

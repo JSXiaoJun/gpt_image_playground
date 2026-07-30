@@ -1,37 +1,45 @@
 const VIDEO_METADATA_TIMEOUT_MS = 15_000
 
-export function getVideoDuration(source: string | File) {
+function getMediaDuration(source: string | File, kind: 'audio' | 'video') {
   return new Promise<number>((resolve, reject) => {
-    const video = document.createElement('video')
+    const media = document.createElement(kind)
     const src = typeof source === 'string' ? source : URL.createObjectURL(source)
     const objectUrl = typeof source === 'string' ? null : src
     const cleanup = () => {
       clearTimeout(timer)
-      video.onloadedmetadata = null
-      video.onerror = null
-      video.removeAttribute('src')
-      video.load()
+      media.onloadedmetadata = null
+      media.onerror = null
+      media.removeAttribute('src')
+      media.load()
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
     const timer = window.setTimeout(() => {
       cleanup()
-      reject(new Error('读取视频时长超时'))
+      reject(new Error(`读取${kind === 'audio' ? '音频' : '视频'}时长超时`))
     }, VIDEO_METADATA_TIMEOUT_MS)
 
-    video.preload = 'metadata'
-    video.onloadedmetadata = () => {
-      const duration = video.duration
+    media.preload = 'metadata'
+    media.onloadedmetadata = () => {
+      const duration = media.duration
       cleanup()
       if (!Number.isFinite(duration) || duration <= 0) {
-        reject(new Error('无法读取视频时长'))
+        reject(new Error(`无法读取${kind === 'audio' ? '音频' : '视频'}时长`))
         return
       }
       resolve(duration)
     }
-    video.onerror = () => {
+    media.onerror = () => {
       cleanup()
-      reject(new Error('无法读取视频时长，请确认链接可以直接访问'))
+      reject(new Error(`无法读取${kind === 'audio' ? '音频' : '视频'}时长，请确认链接可以直接访问`))
     }
-    video.src = src
+    media.src = src
   })
+}
+
+export function getVideoDuration(source: string | File) {
+  return getMediaDuration(source, 'video')
+}
+
+export function getAudioDuration(source: string | File) {
+  return getMediaDuration(source, 'audio')
 }

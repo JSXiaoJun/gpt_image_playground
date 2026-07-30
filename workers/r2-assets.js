@@ -43,7 +43,7 @@ function consumeRateLimit(request) {
 
 function getObjectKey(pathname) {
   const match = pathname.match(/^\/asset\/([^/]+)$/)
-  if (!match || !/^[a-f0-9-]{36}\.(?:png|jpe?g|webp|gif|mp4|webm|mov)$/i.test(match[1])) return null
+  if (!match || !/^[a-f0-9-]{36}\.(?:png|jpe?g|webp|gif|mp4|webm|mov|mp3|wav|m4a|ogg|aac)$/i.test(match[1])) return null
   return `temp/${match[1]}`
 }
 
@@ -56,6 +56,11 @@ function extensionFor(contentType) {
   if (type === 'video/mp4') return 'mp4'
   if (type === 'video/webm') return 'webm'
   if (type === 'video/quicktime') return 'mov'
+  if (type === 'audio/mpeg') return 'mp3'
+  if (type === 'audio/wav' || type === 'audio/x-wav') return 'wav'
+  if (type === 'audio/mp4' || type === 'audio/x-m4a') return 'm4a'
+  if (type === 'audio/ogg') return 'ogg'
+  if (type === 'audio/aac') return 'aac'
   return null
 }
 
@@ -79,7 +84,7 @@ export default {
 
       const contentType = request.headers.get('Content-Type') || ''
       const extension = extensionFor(contentType)
-      if (!extension) return json({ error: 'Only PNG, JPEG, WebP, GIF, MP4, WebM and MOV files are allowed.' }, 415, origin)
+      if (!extension) return json({ error: 'Unsupported image, video or audio format.' }, 415, origin)
 
       const contentLength = Number(request.headers.get('X-File-Size') || request.headers.get('Content-Length') || 0)
       if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > MAX_UPLOAD_BYTES) {
