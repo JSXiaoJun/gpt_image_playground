@@ -3,6 +3,22 @@ export interface VideoModel {
   ownedBy?: string
 }
 
+export interface VideoModelCapabilities {
+  ratios: string[]
+  durations: number[]
+  resolutions: string[]
+  maxImages: number
+  referenceVideo: boolean
+  maxAudios?: number
+  maxReferences?: number
+  minReferenceVideoDuration?: number
+  maxReferenceVideoDuration?: number
+  minAudioDuration?: number
+  maxAudioDuration?: number
+  maxTotalAudioDuration?: number
+  experimental?: boolean
+}
+
 export interface CreateVideoInput {
   model: string
   prompt: string
@@ -69,50 +85,36 @@ export async function fetchVideoModels(baseUrl: string, apiKey: string) {
     .map((model) => ({ id: model.id, ownedBy: model.owned_by }))
 }
 
+export async function fetchVideoModelCapabilities(baseUrl: string) {
+  const data = await fetchJson<{ data?: Array<{ id?: unknown; capabilities?: unknown }> }>(
+    getUrl(baseUrl, '/v1/model-capabilities'),
+    { cache: 'no-store' },
+  )
+  return (data.data ?? []).flatMap((item) => {
+    if (typeof item.id !== 'string' || !item.capabilities || typeof item.capabilities !== 'object' || Array.isArray(item.capabilities)) return []
+    const value = item.capabilities as Partial<VideoModelCapabilities>
+    if (
+      !Array.isArray(value.ratios) || !value.ratios.every((item) => typeof item === 'string') ||
+      !Array.isArray(value.durations) || !value.durations.every((item) => typeof item === 'number') ||
+      !Array.isArray(value.resolutions) || !value.resolutions.every((item) => typeof item === 'string') ||
+      typeof value.maxImages !== 'number' || typeof value.referenceVideo !== 'boolean'
+    ) return []
+    return [{ id: item.id, capabilities: value as VideoModelCapabilities }]
+  })
+}
+
 export async function createVideoTask(baseUrl: string, apiKey: string, input: CreateVideoInput) {
-  const commonBody = {
+  const body = {
     model: input.model,
     prompt: input.prompt,
     ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
     ...(input.duration ? { duration: input.duration } : {}),
     ...(input.resolution ? { resolution: input.resolution } : {}),
     ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
-    ...(input.imageUrls?.length === 1 ? { image_url: input.imageUrls[0] } : {}),
-    ...(input.imageUrls && input.imageUrls.length > 1 ? { image_urls: input.imageUrls } : {}),
+    ...(input.imageUrls?.length ? { image_urls: input.imageUrls } : {}),
     ...(input.referenceVideo ? { reference_video: input.referenceVideo } : {}),
+    ...(input.audioUrls?.length ? { audio_urls: input.audioUrls } : {}),
   }
-  const body = input.model === 'manxue-900'
-    ? {
-        model: input.model,
-        prompt: input.prompt,
-        ...(input.duration ? { duration: input.duration } : {}),
-        ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
-        ...(input.imageUrls?.length ? { images: input.imageUrls } : {}),
-        metadata: {
-          ...(input.aspectRatio ? { ratio: input.aspectRatio } : {}),
-          ...(input.resolution ? { resolution: input.resolution } : {}),
-        },
-      }
-    : input.model === 'manxue-933'
-    ? {
-        model: input.model,
-        prompt: input.prompt,
-        ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
-        ...(input.duration ? { seconds: input.duration } : {}),
-        ...(input.resolution ? { resolution: input.resolution } : {}),
-        ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
-        ...(input.imageUrls?.[0] ? { image_url: input.imageUrls[0] } : {}),
-        ...(input.imageUrls && input.imageUrls.length > 1 ? { reference_image_urls: input.imageUrls.slice(1) } : {}),
-        ...(input.referenceVideo ? { reference_videos: [input.referenceVideo] } : {}),
-        ...(input.audioUrls?.length ? { audio_urls: input.audioUrls } : {}),
-      }
-    : input.model === 'grok-imagine-1.0-video' || input.model === 'grok-imagine-video-1.5-preview'
-    ? {
-        model: input.model,
-        prompt: input.prompt,
-        ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
-      }
-    : commonBody
   const task = await fetchJson<VideoApiTask>(getUrl(baseUrl, '/v1/videos'), {
     method: 'POST',
     headers: getHeaders(apiKey, true),

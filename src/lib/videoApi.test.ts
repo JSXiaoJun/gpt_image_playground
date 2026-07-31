@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createVideoTask, downloadVideoContent, fetchVideoModels } from './videoApi'
+import { createVideoTask, downloadVideoContent, fetchVideoModelCapabilities, fetchVideoModels } from './videoApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -46,7 +46,7 @@ describe('videoApi', () => {
     ])
   })
 
-  it('maps manxue-933 reference audio URLs', async () => {
+  it('sends one canonical payload for model-specific middleware conversion', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ task_id: 'task-933' }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -67,13 +67,44 @@ describe('videoApi', () => {
       body: JSON.stringify({
         model: 'manxue-933',
         prompt: '电影感角色短片',
-        seconds: 15,
+        duration: 15,
         generate_audio: true,
-        image_url: 'https://example.com/main.png',
-        reference_videos: ['https://example.com/reference.mp4'],
+        image_urls: ['https://example.com/main.png'],
+        reference_video: 'https://example.com/reference.mp4',
         audio_urls: ['https://example.com/voice.mp3'],
       }),
     }))
+  })
+
+  it('loads and validates dynamic model capabilities', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        {
+          id: 'manxue-900-10s',
+          capabilities: {
+            ratios: ['16:9'],
+            durations: [10],
+            resolutions: ['720p'],
+            maxImages: 9,
+            referenceVideo: true,
+          },
+        },
+        { id: 'invalid', capabilities: {} },
+      ],
+    }), { status: 200 })))
+
+    await expect(fetchVideoModelCapabilities('https://video-admin.yyapi.cloud')).resolves.toEqual([
+      {
+        id: 'manxue-900-10s',
+        capabilities: {
+          ratios: ['16:9'],
+          durations: [10],
+          resolutions: ['720p'],
+          maxImages: 9,
+          referenceVideo: true,
+        },
+      },
+    ])
   })
 
   it('rejects JSON returned from the content endpoint', async () => {

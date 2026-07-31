@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createVideoTask,
   downloadVideoContent,
+  fetchVideoModelCapabilities,
   fetchVideoModels,
   fetchVideoTask,
   getVideoTaskError,
+  type VideoModelCapabilities,
 } from '../lib/videoApi'
 import { getAudioDuration, getVideoDuration } from '../lib/videoDuration'
 import { uploadR2Asset } from '../lib/r2AssetUpload'
@@ -41,20 +43,10 @@ interface VideoConfig {
   count: number
 }
 
-interface ModelCapabilities {
-  ratios: string[]
-  durations: number[]
-  resolutions: string[]
-  maxImages: number
-  referenceVideo: boolean
-  maxAudios?: number
-  experimental?: boolean
-}
-
 const CONFIG_KEY = 'gpt-image-playground-video-config-v1'
 const TASKS_KEY = 'gpt-image-playground-video-tasks-v1'
 const VIDEO_API_BASE_URL = 'https://zl.yyapi.cloud'
-const MAX_REFERENCE_VIDEO_DURATION_SECONDS = 30
+const VIDEO_CAPABILITIES_BASE_URL = 'https://video-admin.yyapi.cloud'
 const DEFAULT_CONFIG: VideoConfig = {
   apiKey: '',
   model: '',
@@ -64,7 +56,7 @@ const DEFAULT_CONFIG: VideoConfig = {
   generateAudio: true,
   count: 1,
 }
-const DEFAULT_CAPABILITIES: ModelCapabilities = {
+const DEFAULT_CAPABILITIES: VideoModelCapabilities = {
   ratios: ['16:9', '9:16'],
   durations: [4, 6, 8, 10],
   resolutions: ['720p', '1080p'],
@@ -72,11 +64,11 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   referenceVideo: false,
   experimental: true,
 }
-const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
+const FALLBACK_MODEL_CAPABILITIES: Record<string, VideoModelCapabilities> = {
   'gemini-omni-flash': { ratios: ['16:9', '9:16'], durations: [4, 6, 8, 10], resolutions: ['720p', '1080p'], maxImages: 5, referenceVideo: true },
   sora2: { ratios: ['16:9', '9:16'], durations: [4, 8, 12], resolutions: ['720p'], maxImages: 1, referenceVideo: false, experimental: true },
   'veo31-fast': { ratios: ['16:9', '9:16'], durations: [4, 6, 8], resolutions: ['720p', '1080p'], maxImages: 2, referenceVideo: false, experimental: true },
-  'manxue-933': { ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], durations: [15], resolutions: ['720p'], maxImages: 9, referenceVideo: true, maxAudios: 3, experimental: true },
+  'manxue-933': { ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], durations: [15], resolutions: ['720p'], maxImages: 9, referenceVideo: true, maxAudios: 3, maxReferences: 12, minReferenceVideoDuration: 2, maxReferenceVideoDuration: 15, minAudioDuration: 2, maxAudioDuration: 15, maxTotalAudioDuration: 15, experimental: true },
   'manxue-900': { ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], durations: Array.from({ length: 11 }, (_, idx) => idx + 5), resolutions: ['720p'], maxImages: 9, referenceVideo: false, experimental: true },
   'grok-imagine-1.0-video': { ratios: ['自动'], durations: [0], resolutions: ['自动'], maxImages: 0, referenceVideo: false, experimental: true },
   'grok-imagine-video-1.5-fast': { ratios: ['16:9', '9:16'], durations: [10], resolutions: ['720p'], maxImages: 5, referenceVideo: false, experimental: true },
@@ -148,6 +140,7 @@ export default function VideoWorkspace() {
   const [config, setConfig] = useState<VideoConfig>(readConfig)
   const [tasks, setTasks] = useState<VideoTaskRecord[]>(readTasks)
   const [models, setModels] = useState<string[]>([])
+  const [modelCapabilities, setModelCapabilities] = useState(FALLBACK_MODEL_CAPABILITIES)
   const [prompt, setPrompt] = useState('')
   const [imageUrlText, setImageUrlText] = useState('')
   const [referenceVideo, setReferenceVideo] = useState('')
@@ -165,7 +158,7 @@ export default function VideoWorkspace() {
   const videoPreviewRef = useRef<{ taskId: string; url: string } | null>(null)
   const tasksRef = useRef<VideoTaskRecord[]>(tasks)
 
-  const capabilities = MODEL_CAPABILITIES[config.model] ?? DEFAULT_CAPABILITIES
+  const capabilities = modelCapabilities[config.model] ?? DEFAULT_CAPABILITIES
   const imageUrls = imageUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
   const audioUrls = audioUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
 
@@ -183,8 +176,8 @@ export default function VideoWorkspace() {
       setMessage({ text: capabilities.maxAudios ? `当前模型最多支持 ${capabilities.maxAudios} 个参考音频` : '当前模型不支持参考音频', type: 'error' })
       return
     }
-    if (config.model === 'manxue-933' && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) + files.length > 12) {
-      setMessage({ text: 'manxue-933 的图片、视频和音频合计不能超过 12 个', type: 'error' })
+    if (capabilities.maxReferences && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) + files.length > capabilities.maxReferences) {
+      setMessage({ text: `当前模型的图片、视频和音频合计不能超过 ${capabilities.maxReferences} 个`, type: 'error' })
       return
     }
 
@@ -193,23 +186,27 @@ export default function VideoWorkspace() {
     try {
       if (kind === 'video') {
         const duration = await getVideoDuration(files[0])
-        const maxDuration = config.model === 'manxue-933' ? 15 : MAX_REFERENCE_VIDEO_DURATION_SECONDS
-        if (duration > maxDuration || (config.model === 'manxue-933' && duration < 2)) {
-          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${config.model === 'manxue-933' ? '2–15' : '0–30'} 秒内`, type: 'error' })
+        const minDuration = capabilities.minReferenceVideoDuration ?? 0
+        const maxDuration = capabilities.maxReferenceVideoDuration ?? 30
+        if (duration > maxDuration || duration < minDuration) {
+          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
           return
         }
       }
       if (kind === 'audio') {
         const newDurations = await Promise.all(files.map((file) => getAudioDuration(file)))
-        const invalidDuration = newDurations.find((duration) => duration < 2 || duration > 15)
+        const minDuration = capabilities.minAudioDuration ?? 2
+        const maxDuration = capabilities.maxAudioDuration ?? 15
+        const invalidDuration = newDurations.find((duration) => duration < minDuration || duration > maxDuration)
         if (invalidDuration !== undefined) {
-          setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，必须在 2–15 秒内`, type: 'error' })
+          setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
           return
         }
         const existingDurations = await Promise.all(audioUrls.map((url) => getAudioDuration(url)))
         const totalDuration = [...existingDurations, ...newDurations].reduce((sum, duration) => sum + duration, 0)
-        if (totalDuration > 15) {
-          setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 15 秒`, type: 'error' })
+        const maxTotalDuration = capabilities.maxTotalAudioDuration ?? 15
+        if (totalDuration > maxTotalDuration) {
+          setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 ${maxTotalDuration} 秒`, type: 'error' })
           return
         }
       }
@@ -306,9 +303,19 @@ export default function VideoWorkspace() {
     }
     setLoadingModels(true)
     try {
-      const loaded = await fetchVideoModels(VIDEO_API_BASE_URL, config.apiKey.trim())
+      const [loaded, remoteCapabilities] = await Promise.all([
+        fetchVideoModels(VIDEO_API_BASE_URL, config.apiKey.trim()),
+        fetchVideoModelCapabilities(VIDEO_CAPABILITIES_BASE_URL).catch((err) => {
+          console.warn('视频模型能力加载失败，使用内置回退配置', err)
+          return []
+        }),
+      ])
       const ids = loaded.map((model) => model.id)
       setModels(ids)
+      setModelCapabilities({
+        ...FALLBACK_MODEL_CAPABILITIES,
+        ...Object.fromEntries(remoteCapabilities.map((item) => [item.id, item.capabilities])),
+      })
       if (!ids.length) throw new Error('接口没有返回可用模型')
       if (!ids.includes(config.model)) setConfig((current) => ({ ...current, model: ids[0] }))
       setMessage({ text: `已同步 ${ids.length} 个模型`, type: 'success' })
@@ -324,7 +331,7 @@ export default function VideoWorkspace() {
   }, [])
 
   useEffect(() => {
-    const next = MODEL_CAPABILITIES[config.model] ?? DEFAULT_CAPABILITIES
+    const next = modelCapabilities[config.model] ?? DEFAULT_CAPABILITIES
     if (!next.referenceVideo) setReferenceVideo('')
     if (!next.maxAudios) setAudioUrlText('')
     setConfig((current) => ({
@@ -333,7 +340,7 @@ export default function VideoWorkspace() {
       duration: next.durations.includes(current.duration) ? current.duration : next.durations[0],
       resolution: next.resolutions.includes(current.resolution) ? current.resolution : next.resolutions[0],
     }))
-  }, [config.model])
+  }, [config.model, modelCapabilities])
 
   const submit = async () => {
     if (!config.apiKey.trim()) {
@@ -365,8 +372,8 @@ export default function VideoWorkspace() {
       setMessage({ text: `当前模型最多支持 ${capabilities.maxAudios ?? 0} 个参考音频`, type: 'error' })
       return
     }
-    if (config.model === 'manxue-933' && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) > 12) {
-      setMessage({ text: 'manxue-933 的图片、视频和音频合计不能超过 12 个', type: 'error' })
+    if (capabilities.maxReferences && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) > capabilities.maxReferences) {
+      setMessage({ text: `当前模型的图片、视频和音频合计不能超过 ${capabilities.maxReferences} 个`, type: 'error' })
       return
     }
 
@@ -374,9 +381,10 @@ export default function VideoWorkspace() {
       setSubmitting(true)
       try {
         const duration = await getVideoDuration(referenceVideo)
-        const maxDuration = config.model === 'manxue-933' ? 15 : MAX_REFERENCE_VIDEO_DURATION_SECONDS
-        if (duration > maxDuration || (config.model === 'manxue-933' && duration < 2)) {
-          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${config.model === 'manxue-933' ? '2–15' : '0–30'} 秒内`, type: 'error' })
+        const minDuration = capabilities.minReferenceVideoDuration ?? 0
+        const maxDuration = capabilities.maxReferenceVideoDuration ?? 30
+        if (duration > maxDuration || duration < minDuration) {
+          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
           setSubmitting(false)
           return
         }
@@ -391,15 +399,18 @@ export default function VideoWorkspace() {
       setSubmitting(true)
       try {
         const durations = await Promise.all(audioUrls.map((url) => getAudioDuration(url)))
-        const invalidDuration = durations.find((duration) => duration < 2 || duration > 15)
+        const minDuration = capabilities.minAudioDuration ?? 2
+        const maxDuration = capabilities.maxAudioDuration ?? 15
+        const invalidDuration = durations.find((duration) => duration < minDuration || duration > maxDuration)
         if (invalidDuration !== undefined) {
-          setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，单个音频必须在 2–15 秒内`, type: 'error' })
+          setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，单个音频必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
           setSubmitting(false)
           return
         }
         const totalDuration = durations.reduce((sum, duration) => sum + duration, 0)
-        if (totalDuration > 15) {
-          setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 15 秒`, type: 'error' })
+        const maxTotalDuration = capabilities.maxTotalAudioDuration ?? 15
+        if (totalDuration > maxTotalDuration) {
+          setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 ${maxTotalDuration} 秒`, type: 'error' })
           setSubmitting(false)
           return
         }
@@ -612,7 +623,7 @@ export default function VideoWorkspace() {
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
               </div>
               {capabilities.referenceVideo && <div>
-                <span className="mb-1 block text-[11px] text-gray-400">参考视频（{config.model === 'manxue-933' ? '2–15' : '最长 30'} 秒）</span>
+                <span className="mb-1 block text-[11px] text-gray-400">参考视频（{capabilities.minReferenceVideoDuration ?? 0}–{capabilities.maxReferenceVideoDuration ?? 30} 秒）</span>
                 <div className="flex min-h-[58px] items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
                   {referenceVideo ? <>
                     <button type="button" onClick={() => setAssetPreview({ kind: 'video', url: referenceVideo, title: '参考视频' })} className="flex h-10 min-w-0 flex-1 items-center gap-3 overflow-hidden rounded bg-gray-900 px-3 text-left text-xs text-white"><video src={referenceVideo} muted playsInline preload="metadata" className="h-10 w-16 flex-none bg-black object-cover" /><span>查看参考视频</span></button>
