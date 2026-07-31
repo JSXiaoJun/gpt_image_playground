@@ -3,6 +3,12 @@
   "name": "gpt-image-assets-api",
   "main": "workers/r2-assets.js",
   "compatibility_date": "2026-05-07",
+  "routes": [
+    {
+      "pattern": "upload.onlyzhuya.xyz",
+      "custom_domain": true
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "ASSETS_BUCKET",

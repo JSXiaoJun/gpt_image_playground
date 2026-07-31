@@ -1,4 +1,4 @@
-export const R2_ASSET_WORKER_URL = 'https://gpt-image-assets-api.1315233446.workers.dev'
+export const R2_ASSET_WORKER_URL = 'https://upload.onlyzhuya.xyz'
 export const MAX_R2_UPLOAD_BYTES = 100 * 1024 * 1024
 
 const ALLOWED_TYPES = new Set([
