@@ -1,6 +1,6 @@
 const ALLOWED_ORIGIN = 'https://image.yyapi.cloud'
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
-const MAX_REQUESTS_PER_WINDOW = 20
+const MAX_REQUESTS_PER_WINDOW = 1000
 const RATE_WINDOW_MS = 24 * 60 * 60 * 1000
 
 const recentUploads = new Map()
