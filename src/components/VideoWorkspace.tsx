@@ -182,6 +182,7 @@ export default function VideoWorkspace() {
       return
     }
 
+    setMessage(null)
     setUploadingAsset(kind)
     try {
       if (kind === 'video') {
@@ -203,7 +204,6 @@ export default function VideoWorkspace() {
       if (kind === 'image') setImageUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
       else if (kind === 'video') setReferenceVideo(url)
       else setAudioUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
-      setMessage({ text: `${kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频'}上传成功`, type: 'success' })
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : '上传失败', type: 'error' })
     } finally {
@@ -562,15 +562,37 @@ export default function VideoWorkspace() {
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') void submit() }} placeholder="描述镜头、主体动作、场景和风格…" rows={2} className="w-full resize-none bg-transparent px-1 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400 dark:text-white" />
           <div className="mt-2 grid gap-2 border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:grid-cols-2">
               <div>
-                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考图片 URL（每行一个，最多 {capabilities.maxImages} 张）</span><textarea value={imageUrlText} onChange={(e) => setImageUrlText(e.target.value)} disabled={!capabilities.maxImages} rows={2} placeholder="https://example.com/reference.png" className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <span className="mb-1 block text-[11px] text-gray-400">参考图片（最多 {capabilities.maxImages} 张）</span>
+                <div className="flex min-h-[58px] flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
+                  {imageUrls.length ? imageUrls.map((url, idx) => (
+                    <div key={`${url}-${idx}`} className="group relative h-10 w-10 flex-none overflow-hidden rounded-md border border-gray-200 bg-white dark:border-white/[0.1] dark:bg-gray-900">
+                      <img src={url} alt={`参考图片 ${idx + 1}`} className="h-full w-full object-cover" />
+                      <button type="button" onClick={() => setImageUrlText(imageUrls.filter((_, imageIdx) => imageIdx !== idx).join('\n'))} title="移除图片" aria-label={`移除参考图片 ${idx + 1}`} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded bg-black/65 text-white transition hover:bg-red-600"><TrashIcon className="h-3 w-3" /></button>
+                    </div>
+                  )) : <span className="px-1 text-xs text-gray-400">尚未上传图片</span>}
+                </div>
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
               </div>
               {capabilities.referenceVideo && <div>
-                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考视频 URL（{config.model === 'manxue-933' ? '2–15' : '最长 30'} 秒）</span><input value={referenceVideo} onChange={(e) => setReferenceVideo(e.target.value)} placeholder="https://example.com/source.mp4" className="h-[58px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <span className="mb-1 block text-[11px] text-gray-400">参考视频（{config.model === 'manxue-933' ? '2–15' : '最长 30'} 秒）</span>
+                <div className="flex min-h-[58px] items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
+                  {referenceVideo ? <>
+                    <video src={referenceVideo} controls playsInline preload="metadata" className="h-10 min-w-0 flex-1 bg-black object-contain" />
+                    <button type="button" onClick={() => setReferenceVideo('')} title="移除视频" aria-label="移除参考视频" className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
+                  </> : <span className="px-1 text-xs text-gray-400">尚未上传视频</span>}
+                </div>
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
               </div>}
               {capabilities.maxAudios && <div>
-                <label className="block"><span className="mb-1 block text-[11px] text-gray-400">参考音频 URL（每行一个，最多 {capabilities.maxAudios} 个，总时长 15 秒）</span><textarea value={audioUrlText} onChange={(e) => setAudioUrlText(e.target.value)} rows={2} placeholder="https://example.com/reference.mp3" className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+                <span className="mb-1 block text-[11px] text-gray-400">参考音频（最多 {capabilities.maxAudios} 个，总时长 15 秒）</span>
+                <div className="flex min-h-[58px] flex-col justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
+                  {audioUrls.length ? audioUrls.map((url, idx) => (
+                    <div key={`${url}-${idx}`} className="flex min-w-0 items-center gap-2">
+                      <audio src={url} controls preload="metadata" className="h-8 min-w-0 flex-1" />
+                      <button type="button" onClick={() => setAudioUrlText(audioUrls.filter((_, audioIdx) => audioIdx !== idx).join('\n'))} title="移除音频" aria-label={`移除参考音频 ${idx + 1}`} className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
+                    </div>
+                  )) : <span className="px-1 text-xs text-gray-400">尚未上传音频</span>}
+                </div>
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/ogg,audio/aac" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'audio') }} />{uploadingAsset === 'audio' ? '上传中…' : '上传音频'}</label>
               </div>}
           </div>
