@@ -9,18 +9,14 @@
       "bucket_name": "gpt-image-playground-assets"
     }
   ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "UPLOAD_QUOTA",
-        "class_name": "UploadQuota"
-      }
-    ]
-  },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["UploadQuota"]
+    },
+    {
+      "tag": "v2",
+      "deleted_classes": ["UploadQuota"]
     }
   ]
 }
