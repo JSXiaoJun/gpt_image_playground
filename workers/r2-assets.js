@@ -1,9 +1,51 @@
+import { DurableObject } from 'cloudflare:workers'
+
 const ALLOWED_ORIGIN = 'https://image.yyapi.cloud'
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 const MAX_REQUESTS_PER_WINDOW = 20
 const RATE_WINDOW_MS = 24 * 60 * 60 * 1000
+const MAX_ROLLING_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024
+const UPLOAD_QUOTA_WINDOW_MS = 24 * 60 * 60 * 1000
 
 const recentUploads = new Map()
+
+export class UploadQuota extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env)
+    ctx.blockConcurrencyWhile(async () => {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS upload_reservations (
+          id TEXT PRIMARY KEY,
+          bytes INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        )
+      `)
+      this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS upload_reservations_expires_at ON upload_reservations (expires_at)')
+    })
+  }
+
+  reserve(bytes) {
+    const now = Date.now()
+    this.ctx.storage.sql.exec('DELETE FROM upload_reservations WHERE expires_at <= ?', now)
+    const usage = this.ctx.storage.sql.exec('SELECT COALESCE(SUM(bytes), 0) AS used_bytes FROM upload_reservations').one()
+    if (usage.used_bytes + bytes > MAX_ROLLING_UPLOAD_BYTES) {
+      return { allowed: false, usedBytes: usage.used_bytes, maxBytes: MAX_ROLLING_UPLOAD_BYTES }
+    }
+
+    const id = crypto.randomUUID()
+    this.ctx.storage.sql.exec(
+      'INSERT INTO upload_reservations (id, bytes, expires_at) VALUES (?, ?, ?)',
+      id,
+      bytes,
+      now + UPLOAD_QUOTA_WINDOW_MS,
+    )
+    return { allowed: true, id, usedBytes: usage.used_bytes + bytes, maxBytes: MAX_ROLLING_UPLOAD_BYTES }
+  }
+
+  release(id) {
+    this.ctx.storage.sql.exec('DELETE FROM upload_reservations WHERE id = ?', id)
+  }
+}
 
 function corsHeaders(origin) {
   const headers = new Headers({
@@ -86,17 +128,33 @@ export default {
       const extension = extensionFor(contentType)
       if (!extension) return json({ error: 'Unsupported image, video or audio format.' }, 415, origin)
 
-      const contentLength = Number(request.headers.get('X-File-Size') || request.headers.get('Content-Length') || 0)
+      const contentLength = Number(request.headers.get('Content-Length') || 0)
+      const declaredLength = Number(request.headers.get('X-File-Size') || 0)
       if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > MAX_UPLOAD_BYTES) {
         return json({ error: 'File is empty or exceeds the 100 MB limit.' }, 413, origin)
+      }
+      if (!Number.isFinite(declaredLength) || declaredLength !== contentLength) {
+        return json({ error: 'File size does not match the upload body.' }, 400, origin)
+      }
+
+      const quota = env.UPLOAD_QUOTA.getByName('global')
+      const reservation = await quota.reserve(contentLength)
+      if (!reservation.allowed) {
+        return json({ error: 'The rolling 24-hour upload quota of 8 GB has been reached. Try again later.' }, 429, origin)
       }
 
       const id = crypto.randomUUID()
       const key = `temp/${id}.${extension}`
-      await env.ASSETS_BUCKET.put(key, request.body, {
-        httpMetadata: { contentType },
-        customMetadata: { origin, uploadedAt: new Date().toISOString() },
-      })
+      try {
+        await env.ASSETS_BUCKET.put(key, request.body, {
+          httpMetadata: { contentType },
+          customMetadata: { origin, uploadedAt: new Date().toISOString() },
+        })
+      } catch (err) {
+        console.error('R2 upload failed', err)
+        await quota.release(reservation.id)
+        return json({ error: 'Upload failed. Please try again.' }, 503, origin)
+      }
       return json({ key, url: `${url.origin}/asset/${id}.${extension}` }, 201, origin)
     }
 
