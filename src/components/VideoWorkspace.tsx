@@ -160,6 +160,7 @@ export default function VideoWorkspace() {
   const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | 'audio' | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'error' | 'success' } | null>(null)
   const [videoPreview, setVideoPreview] = useState<{ taskId: string; url: string } | null>(null)
+  const [assetPreview, setAssetPreview] = useState<{ kind: 'image' | 'video' | 'audio'; url: string; title: string } | null>(null)
   const pollingRef = useRef(new Set<string>())
   const videoPreviewRef = useRef<{ taskId: string; url: string } | null>(null)
   const tasksRef = useRef<VideoTaskRecord[]>(tasks)
@@ -168,17 +169,22 @@ export default function VideoWorkspace() {
   const imageUrls = imageUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
   const audioUrls = audioUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
 
-  const uploadAsset = async (file: File, kind: 'image' | 'video' | 'audio') => {
-    if (kind === 'image' && imageUrls.length >= capabilities.maxImages) {
-      setMessage({ text: `当前模型最多支持 ${capabilities.maxImages} 张参考图`, type: 'error' })
+  const uploadAssets = async (files: File[], kind: 'image' | 'video' | 'audio') => {
+    if (!files.length) return
+    if (kind === 'image' && imageUrls.length + files.length > capabilities.maxImages) {
+      setMessage({ text: `当前还能上传 ${Math.max(0, capabilities.maxImages - imageUrls.length)} 张参考图`, type: 'error' })
       return
     }
     if (kind === 'video' && !capabilities.referenceVideo) {
       setMessage({ text: '当前模型不支持参考视频', type: 'error' })
       return
     }
-    if (kind === 'audio' && (!capabilities.maxAudios || audioUrls.length >= capabilities.maxAudios)) {
+    if (kind === 'audio' && (!capabilities.maxAudios || audioUrls.length + files.length > capabilities.maxAudios)) {
       setMessage({ text: capabilities.maxAudios ? `当前模型最多支持 ${capabilities.maxAudios} 个参考音频` : '当前模型不支持参考音频', type: 'error' })
+      return
+    }
+    if (config.model === 'manxue-933' && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) + files.length > 12) {
+      setMessage({ text: 'manxue-933 的图片、视频和音频合计不能超过 12 个', type: 'error' })
       return
     }
 
@@ -186,7 +192,7 @@ export default function VideoWorkspace() {
     setUploadingAsset(kind)
     try {
       if (kind === 'video') {
-        const duration = await getVideoDuration(file)
+        const duration = await getVideoDuration(files[0])
         const maxDuration = config.model === 'manxue-933' ? 15 : MAX_REFERENCE_VIDEO_DURATION_SECONDS
         if (duration > maxDuration || (config.model === 'manxue-933' && duration < 2)) {
           setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${config.model === 'manxue-933' ? '2–15' : '0–30'} 秒内`, type: 'error' })
@@ -194,16 +200,25 @@ export default function VideoWorkspace() {
         }
       }
       if (kind === 'audio') {
-        const duration = await getAudioDuration(file)
-        if (duration < 2 || duration > 15) {
-          setMessage({ text: `参考音频时长为 ${duration.toFixed(1)} 秒，必须在 2–15 秒内`, type: 'error' })
+        const newDurations = await Promise.all(files.map((file) => getAudioDuration(file)))
+        const invalidDuration = newDurations.find((duration) => duration < 2 || duration > 15)
+        if (invalidDuration !== undefined) {
+          setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，必须在 2–15 秒内`, type: 'error' })
+          return
+        }
+        const existingDurations = await Promise.all(audioUrls.map((url) => getAudioDuration(url)))
+        const totalDuration = [...existingDurations, ...newDurations].reduce((sum, duration) => sum + duration, 0)
+        if (totalDuration > 15) {
+          setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 15 秒`, type: 'error' })
           return
         }
       }
-      const url = await uploadR2Asset(file)
-      if (kind === 'image') setImageUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
-      else if (kind === 'video') setReferenceVideo(url)
-      else setAudioUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
+      for (const file of files) {
+        const url = await uploadR2Asset(file)
+        if (kind === 'image') setImageUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
+        else if (kind === 'video') setReferenceVideo(url)
+        else setAudioUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
+      }
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : '上传失败', type: 'error' })
     } finally {
@@ -227,6 +242,15 @@ export default function VideoWorkspace() {
   useEffect(() => () => {
     if (videoPreviewRef.current) URL.revokeObjectURL(videoPreviewRef.current.url)
   }, [])
+
+  useEffect(() => {
+    if (!assetPreview) return
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAssetPreview(null)
+    }
+    window.addEventListener('keydown', close)
+    return () => window.removeEventListener('keydown', close)
+  }, [assetPreview])
 
   const updateTask = useCallback((id: string, patch: Partial<VideoTaskRecord>) => {
     setTasks((current) => current.map((task) => task.id === id ? { ...task, ...patch, updatedAt: Date.now() } : task))
@@ -549,6 +573,20 @@ export default function VideoWorkspace() {
         )}
       </main>
 
+      {assetPreview && (
+        <div role="dialog" aria-modal="true" aria-label={assetPreview.title} onClick={() => setAssetPreview(null)} className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div onClick={(e) => e.stopPropagation()} className={`w-full rounded-lg bg-white p-3 shadow-2xl dark:bg-gray-950 ${assetPreview.kind === 'audio' ? 'max-w-xl' : 'max-w-5xl'}`}>
+            <div className="mb-3 flex items-center justify-between gap-3 px-1">
+              <span className="truncate text-sm font-medium text-gray-700 dark:text-gray-200">{assetPreview.title}</span>
+              <button type="button" onClick={() => setAssetPreview(null)} title="关闭" aria-label="关闭预览" className="flex h-8 w-8 flex-none items-center justify-center rounded text-xl leading-none text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/[0.08] dark:hover:text-white">×</button>
+            </div>
+            {assetPreview.kind === 'image' && <img src={assetPreview.url} alt={assetPreview.title} className="max-h-[80vh] w-full object-contain" />}
+            {assetPreview.kind === 'video' && <video src={assetPreview.url} controls autoPlay playsInline className="max-h-[80vh] w-full bg-black object-contain" />}
+            {assetPreview.kind === 'audio' && <audio src={assetPreview.url} controls autoPlay className="w-full" />}
+          </div>
+        </div>
+      )}
+
       <div data-no-drag-select className="safe-area-x fixed inset-x-0 bottom-0 z-30 pb-[calc(16px+env(safe-area-inset-bottom,0px))]">
         <div className="mx-auto max-w-5xl overflow-visible rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-[0_-8px_40px_rgba(0,0,0,0.08)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-gray-950/95 sm:p-4">
           {showConfig && (
@@ -566,34 +604,34 @@ export default function VideoWorkspace() {
                 <div className="flex min-h-[58px] flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
                   {imageUrls.length ? imageUrls.map((url, idx) => (
                     <div key={`${url}-${idx}`} className="group relative h-10 w-10 flex-none overflow-hidden rounded-md border border-gray-200 bg-white dark:border-white/[0.1] dark:bg-gray-900">
-                      <img src={url} alt={`参考图片 ${idx + 1}`} className="h-full w-full object-cover" />
-                      <button type="button" onClick={() => setImageUrlText(imageUrls.filter((_, imageIdx) => imageIdx !== idx).join('\n'))} title="移除图片" aria-label={`移除参考图片 ${idx + 1}`} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded bg-black/65 text-white transition hover:bg-red-600"><TrashIcon className="h-3 w-3" /></button>
+                      <button type="button" onClick={() => setAssetPreview({ kind: 'image', url, title: `参考图片 ${idx + 1}` })} title="查看图片" className="absolute inset-0"><img src={url} alt={`参考图片 ${idx + 1}`} className="h-full w-full object-cover" /></button>
+                      <button type="button" onClick={() => setImageUrlText(imageUrls.filter((_, imageIdx) => imageIdx !== idx).join('\n'))} title="移除图片" aria-label={`移除参考图片 ${idx + 1}`} className="absolute right-0.5 top-0.5 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/65 text-white transition hover:bg-red-600"><TrashIcon className="h-3 w-3" /></button>
                     </div>
                   )) : <span className="px-1 text-xs text-gray-400">尚未上传图片</span>}
                 </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
               </div>
               {capabilities.referenceVideo && <div>
                 <span className="mb-1 block text-[11px] text-gray-400">参考视频（{config.model === 'manxue-933' ? '2–15' : '最长 30'} 秒）</span>
                 <div className="flex min-h-[58px] items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
                   {referenceVideo ? <>
-                    <video src={referenceVideo} controls playsInline preload="metadata" className="h-10 min-w-0 flex-1 bg-black object-contain" />
+                    <button type="button" onClick={() => setAssetPreview({ kind: 'video', url: referenceVideo, title: '参考视频' })} className="flex h-10 min-w-0 flex-1 items-center gap-3 overflow-hidden rounded bg-gray-900 px-3 text-left text-xs text-white"><video src={referenceVideo} muted playsInline preload="metadata" className="h-10 w-16 flex-none bg-black object-cover" /><span>查看参考视频</span></button>
                     <button type="button" onClick={() => setReferenceVideo('')} title="移除视频" aria-label="移除参考视频" className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
                   </> : <span className="px-1 text-xs text-gray-400">尚未上传视频</span>}
                 </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
               </div>}
               {capabilities.maxAudios && <div>
                 <span className="mb-1 block text-[11px] text-gray-400">参考音频（最多 {capabilities.maxAudios} 个，总时长 15 秒）</span>
                 <div className="flex min-h-[58px] flex-col justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
                   {audioUrls.length ? audioUrls.map((url, idx) => (
                     <div key={`${url}-${idx}`} className="flex min-w-0 items-center gap-2">
-                      <audio src={url} controls preload="metadata" className="h-8 min-w-0 flex-1" />
+                      <button type="button" onClick={() => setAssetPreview({ kind: 'audio', url, title: `参考音频 ${idx + 1}` })} className="h-8 min-w-0 flex-1 truncate rounded bg-white px-3 text-left text-xs text-gray-600 transition hover:bg-gray-100 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1]">播放参考音频 {idx + 1}</button>
                       <button type="button" onClick={() => setAudioUrlText(audioUrls.filter((_, audioIdx) => audioIdx !== idx).join('\n'))} title="移除音频" aria-label={`移除参考音频 ${idx + 1}`} className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
                     </div>
                   )) : <span className="px-1 text-xs text-gray-400">尚未上传音频</span>}
                 </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/ogg,audio/aac" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const file = e.target.files?.[0]; e.currentTarget.value = ''; if (file) void uploadAsset(file, 'audio') }} />{uploadingAsset === 'audio' ? '上传中…' : '上传音频'}</label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/ogg,audio/aac" multiple className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'audio') }} />{uploadingAsset === 'audio' ? '上传中…' : '上传音频'}</label>
               </div>}
           </div>
           <div className="mt-3 flex flex-wrap items-end gap-2">
