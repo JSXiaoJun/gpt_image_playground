@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createVideoTask,
   downloadVideoContent,
-  fetchVideoModelCapabilities,
-  fetchVideoModels,
+  fetchVideoCatalog,
   fetchVideoTask,
   getVideoContentUrl,
   getVideoTaskError,
@@ -69,7 +68,7 @@ const DEFAULT_CAPABILITIES: VideoModelCapabilities = {
   experimental: true,
 }
 const FALLBACK_MODEL_CAPABILITIES: Record<string, VideoModelCapabilities> = {
-  'gemini-omni-flash': { ratios: ['16:9', '9:16'], durations: [4, 6, 8, 10], resolutions: ['720p', '1080p'], maxImages: 5, referenceVideo: true },
+  'gemini-omni-flash': { ratios: ['16:9', '9:16'], durations: [4, 6, 8, 10], resolutions: ['720p'], maxImages: 5, referenceVideo: true },
   sora2: { ratios: ['16:9', '9:16'], durations: [4, 8, 12], resolutions: ['720p'], maxImages: 1, referenceVideo: false, experimental: true },
   'veo31-fast': { ratios: ['16:9', '9:16'], durations: [4, 6, 8], resolutions: ['720p', '1080p'], maxImages: 2, referenceVideo: false, experimental: true },
   'manxue-933': { ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], durations: [15], resolutions: ['720p'], maxImages: 9, referenceVideo: true, maxAudios: 3, maxReferences: 12, minReferenceVideoDuration: 2, maxReferenceVideoDuration: 15, minAudioDuration: 2, maxAudioDuration: 15, maxTotalAudioDuration: 15, experimental: true },
@@ -307,13 +306,11 @@ export default function VideoWorkspace() {
     }
     setLoadingModels(true)
     try {
-      const [loaded, remoteCapabilities] = await Promise.all([
-        fetchVideoModels(VIDEO_API_BASE_URL, config.apiKey.trim()),
-        fetchVideoModelCapabilities(VIDEO_CAPABILITIES_BASE_URL).catch((err) => {
-          console.warn('视频模型能力加载失败，使用内置回退配置', err)
-          return []
-        }),
-      ])
+      const { models: loaded, capabilities: remoteCapabilities } = await fetchVideoCatalog(
+        VIDEO_API_BASE_URL,
+        VIDEO_CAPABILITIES_BASE_URL,
+        config.apiKey.trim(),
+      )
       const ids = loaded.map((model) => model.id)
       setModels(ids)
       setModelCapabilities({

@@ -102,20 +102,23 @@ export default {
 
     const key = getObjectKey(url.pathname)
     if (key && (request.method === 'GET' || request.method === 'HEAD')) {
-      const object = await env.ASSETS_BUCKET.get(key, { range: request.headers })
+      const rangeRequested = request.headers.has('Range')
+      const object = rangeRequested
+        ? await env.ASSETS_BUCKET.get(key, { range: request.headers })
+        : await env.ASSETS_BUCKET.get(key)
       if (!object) return new Response('Not found', { status: 404 })
       const headers = new Headers(corsHeaders(origin))
       object.writeHttpMetadata(headers)
       headers.set('Cache-Control', 'private, max-age=3600')
       headers.set('ETag', object.httpEtag)
       headers.set('Accept-Ranges', 'bytes')
-      if (object.range && 'offset' in object.range && 'length' in object.range) {
+      if (rangeRequested && object.range && 'offset' in object.range && 'length' in object.range) {
         headers.set('Content-Length', String(object.range.length))
         headers.set('Content-Range', `bytes ${object.range.offset}-${object.range.offset + object.range.length - 1}/${object.size}`)
       } else {
         headers.set('Content-Length', String(object.size))
       }
-      return new Response(request.method === 'HEAD' ? null : object.body, { status: object.range ? 206 : 200, headers })
+      return new Response(request.method === 'HEAD' ? null : object.body, { status: rangeRequested && object.range ? 206 : 200, headers })
     }
 
     return json({ error: 'Not found' }, 404, origin)

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createVideoTask, downloadVideoContent, fetchVideoModelCapabilities, fetchVideoModels, getVideoContentUrl, normalizeVideoProgress, normalizeVideoTaskStatus } from './videoApi'
+import { createVideoTask, downloadVideoContent, fetchVideoCatalog, fetchVideoModelCapabilities, fetchVideoModels, getVideoContentUrl, normalizeVideoProgress, normalizeVideoTaskStatus } from './videoApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -105,6 +105,49 @@ describe('videoApi', () => {
         },
       },
     ])
+  })
+
+  it('loads models and capabilities together without exposing the API key', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'gemini-omni-flash' }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [{
+          id: 'gemini-omni-flash',
+          capabilities: {
+            ratios: ['16:9'],
+            durations: [10],
+            resolutions: ['720p'],
+            maxImages: 5,
+            referenceVideo: true,
+          },
+        }],
+      }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchVideoCatalog(
+      'https://zl.yyapi.cloud',
+      'https://video-admin.yyapi.cloud',
+      'sk-test',
+    )).resolves.toEqual({
+      models: [{ id: 'gemini-omni-flash', ownedBy: undefined }],
+      capabilities: [{
+        id: 'gemini-omni-flash',
+        capabilities: {
+          ratios: ['16:9'],
+          durations: [10],
+          resolutions: ['720p'],
+          maxImages: 5,
+          referenceVideo: true,
+        },
+      }],
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://zl.yyapi.cloud/v1/models', {
+      headers: { Authorization: 'Bearer sk-test' },
+      cache: 'no-store',
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://video-admin.yyapi.cloud/v1/model-capabilities', {
+      cache: 'no-store',
+    })
   })
 
   it('rejects JSON returned from the content endpoint', async () => {

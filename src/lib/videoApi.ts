@@ -107,6 +107,17 @@ export async function fetchVideoModelCapabilities(baseUrl: string) {
   })
 }
 
+export async function fetchVideoCatalog(apiBaseUrl: string, capabilitiesBaseUrl: string, apiKey: string) {
+  const [models, capabilities] = await Promise.all([
+    fetchVideoModels(apiBaseUrl, apiKey),
+    fetchVideoModelCapabilities(capabilitiesBaseUrl).catch((err) => {
+      console.warn('视频模型能力加载失败，使用内置回退配置', err)
+      return []
+    }),
+  ])
+  return { models, capabilities }
+}
+
 export async function createVideoTask(baseUrl: string, apiKey: string, input: CreateVideoInput) {
   const body = {
     model: input.model,
