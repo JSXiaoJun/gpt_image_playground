@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createVideoTask, downloadVideoContent, fetchVideoCatalog, fetchVideoModelCapabilities, fetchVideoModels, getVideoContentUrl, normalizeVideoProgress, normalizeVideoTaskStatus } from './videoApi'
+import { createVideoTask, downloadVideoContent, fetchVideoCatalog, fetchVideoModelCapabilities, getVideoContentUrl, normalizeVideoProgress, normalizeVideoTaskStatus } from './videoApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -34,16 +34,6 @@ describe('videoApi', () => {
         image_urls: ['https://example.com/a.png', 'https://example.com/b.png'],
       }),
     }))
-  })
-
-  it('loads the live model list', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      data: [{ id: 'sora2', owned_by: 'test' }, {}],
-    }), { status: 200 })))
-
-    await expect(fetchVideoModels('https://zl.yyapi.cloud', 'sk-test')).resolves.toEqual([
-      { id: 'sora2', ownedBy: 'test' },
-    ])
   })
 
   it('sends one canonical payload for model-specific middleware conversion', async () => {
@@ -107,10 +97,8 @@ describe('videoApi', () => {
     ])
   })
 
-  it('loads models and capabilities together without exposing the API key', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'gemini-omni-flash' }] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
+  it('loads the complete catalog from middleware without an API key', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
         data: [{
           id: 'gemini-omni-flash',
           capabilities: {
@@ -124,12 +112,8 @@ describe('videoApi', () => {
       }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(fetchVideoCatalog(
-      'https://zl.yyapi.cloud',
-      'https://video-admin.yyapi.cloud',
-      'sk-test',
-    )).resolves.toEqual({
-      models: [{ id: 'gemini-omni-flash', ownedBy: undefined }],
+    await expect(fetchVideoCatalog('https://video-admin.yyapi.cloud')).resolves.toEqual({
+      models: ['gemini-omni-flash'],
       capabilities: [{
         id: 'gemini-omni-flash',
         capabilities: {
@@ -141,11 +125,8 @@ describe('videoApi', () => {
         },
       }],
     })
-    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://zl.yyapi.cloud/v1/models', {
-      headers: { Authorization: 'Bearer sk-test' },
-      cache: 'no-store',
-    })
-    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://video-admin.yyapi.cloud/v1/model-capabilities', {
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith('https://video-admin.yyapi.cloud/v1/model-capabilities', {
       cache: 'no-store',
     })
   })

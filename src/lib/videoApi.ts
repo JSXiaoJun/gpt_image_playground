@@ -1,8 +1,3 @@
-export interface VideoModel {
-  id: string
-  ownedBy?: string
-}
-
 export interface VideoModelCapabilities {
   ratios: string[]
   durations: number[]
@@ -79,16 +74,6 @@ async function fetchJson<T>(url: string, init: RequestInit) {
   return response.json() as Promise<T>
 }
 
-export async function fetchVideoModels(baseUrl: string, apiKey: string) {
-  const data = await fetchJson<{ data?: Array<{ id?: string; owned_by?: string }> }>(
-    getUrl(baseUrl, '/v1/models'),
-    { headers: getHeaders(apiKey), cache: 'no-store' },
-  )
-  return (data.data ?? [])
-    .filter((model): model is { id: string; owned_by?: string } => Boolean(model.id))
-    .map((model) => ({ id: model.id, ownedBy: model.owned_by }))
-}
-
 export async function fetchVideoModelCapabilities(baseUrl: string) {
   const data = await fetchJson<{ data?: Array<{ id?: unknown; capabilities?: unknown }> }>(
     getUrl(baseUrl, '/v1/model-capabilities'),
@@ -107,15 +92,9 @@ export async function fetchVideoModelCapabilities(baseUrl: string) {
   })
 }
 
-export async function fetchVideoCatalog(apiBaseUrl: string, capabilitiesBaseUrl: string, apiKey: string) {
-  const [models, capabilities] = await Promise.all([
-    fetchVideoModels(apiBaseUrl, apiKey),
-    fetchVideoModelCapabilities(capabilitiesBaseUrl).catch((err) => {
-      console.warn('视频模型能力加载失败，使用内置回退配置', err)
-      return []
-    }),
-  ])
-  return { models, capabilities }
+export async function fetchVideoCatalog(baseUrl: string) {
+  const capabilities = await fetchVideoModelCapabilities(baseUrl)
+  return { models: capabilities.map((item) => item.id), capabilities }
 }
 
 export async function createVideoTask(baseUrl: string, apiKey: string, input: CreateVideoInput) {

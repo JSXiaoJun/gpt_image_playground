@@ -48,6 +48,7 @@ interface VideoConfig {
 
 const CONFIG_KEY = 'gpt-image-playground-video-config-v1'
 const TASKS_KEY = 'gpt-image-playground-video-tasks-v1'
+const CATALOG_KEY = 'gpt-image-playground-video-catalog-v1'
 const VIDEO_API_BASE_URL = 'https://zl.yyapi.cloud'
 const VIDEO_CAPABILITIES_BASE_URL = 'https://video-admin.yyapi.cloud'
 const DEFAULT_CONFIG: VideoConfig = {
@@ -116,6 +117,25 @@ function readTasks() {
   ))
 }
 
+function readCatalog() {
+  const value = readJson(CATALOG_KEY)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const catalog = value as { models?: unknown; capabilities?: unknown }
+  if (!Array.isArray(catalog.models) || !catalog.models.every((model) => typeof model === 'string')) return null
+  if (!catalog.capabilities || typeof catalog.capabilities !== 'object' || Array.isArray(catalog.capabilities)) return null
+  const capabilities = catalog.capabilities as Record<string, Partial<VideoModelCapabilities>>
+  if (!Object.values(capabilities).every((item) => (
+    Array.isArray(item.ratios) && item.ratios.every((ratio) => typeof ratio === 'string') &&
+    Array.isArray(item.durations) && item.durations.every((duration) => typeof duration === 'number') &&
+    Array.isArray(item.resolutions) && item.resolutions.every((resolution) => typeof resolution === 'string') &&
+    typeof item.maxImages === 'number' && typeof item.referenceVideo === 'boolean'
+  ))) return null
+  return {
+    models: catalog.models,
+    capabilities: capabilities as Record<string, VideoModelCapabilities>,
+  }
+}
+
 function getStatusLabel(status: VideoTaskStatus) {
   if (status === 'submitting') return '正在提交'
   if (status === 'queued') return '排队中'
@@ -140,10 +160,14 @@ function isPublicUrl(value: string) {
 }
 
 export default function VideoWorkspace() {
+  const cachedCatalog = useMemo(readCatalog, [])
   const [config, setConfig] = useState<VideoConfig>(readConfig)
   const [tasks, setTasks] = useState<VideoTaskRecord[]>(readTasks)
-  const [models, setModels] = useState<string[]>([])
-  const [modelCapabilities, setModelCapabilities] = useState(FALLBACK_MODEL_CAPABILITIES)
+  const [models, setModels] = useState<string[]>(cachedCatalog?.models ?? [])
+  const [modelCapabilities, setModelCapabilities] = useState({
+    ...FALLBACK_MODEL_CAPABILITIES,
+    ...cachedCatalog?.capabilities,
+  })
   const [prompt, setPrompt] = useState('')
   const [imageUrlText, setImageUrlText] = useState('')
   const [referenceVideo, setReferenceVideo] = useState('')
@@ -299,25 +323,22 @@ export default function VideoWorkspace() {
   }, [pollTask])
 
   const loadModels = useCallback(async () => {
-    if (!config.apiKey.trim()) {
-      setShowConfig(true)
-      setMessage({ text: '请先填写视频接口 API Key', type: 'error' })
-      return
-    }
     setLoadingModels(true)
     try {
-      const { models: loaded, capabilities: remoteCapabilities } = await fetchVideoCatalog(
-        VIDEO_API_BASE_URL,
-        VIDEO_CAPABILITIES_BASE_URL,
-        config.apiKey.trim(),
-      )
-      const ids = loaded.map((model) => model.id)
-      setModels(ids)
-      setModelCapabilities({
+      const { models: ids, capabilities: remoteCapabilities } = await fetchVideoCatalog(VIDEO_CAPABILITIES_BASE_URL)
+      if (!ids.length) throw new Error('中间件没有返回可用模型')
+      const capabilitiesByModel = Object.fromEntries(remoteCapabilities.map((item) => [item.id, item.capabilities]))
+      const mergedCapabilities = {
         ...FALLBACK_MODEL_CAPABILITIES,
-        ...Object.fromEntries(remoteCapabilities.map((item) => [item.id, item.capabilities])),
-      })
-      if (!ids.length) throw new Error('接口没有返回可用模型')
+        ...capabilitiesByModel,
+      }
+      localStorage.setItem(CATALOG_KEY, JSON.stringify({
+        models: ids,
+        capabilities: capabilitiesByModel,
+        updatedAt: Date.now(),
+      }))
+      setModels(ids)
+      setModelCapabilities(mergedCapabilities)
       if (!ids.includes(config.model)) setConfig((current) => ({ ...current, model: ids[0] }))
       setMessage({ text: `已同步 ${ids.length} 个模型`, type: 'success' })
     } catch (err) {
@@ -325,11 +346,7 @@ export default function VideoWorkspace() {
     } finally {
       setLoadingModels(false)
     }
-  }, [config.apiKey, config.model])
-
-  useEffect(() => {
-    if (config.apiKey && !models.length) void loadModels()
-  }, [])
+  }, [config.model])
 
   useEffect(() => {
     const next = modelCapabilities[config.model] ?? DEFAULT_CAPABILITIES
@@ -350,7 +367,7 @@ export default function VideoWorkspace() {
       return
     }
     if (!config.model) {
-      setMessage({ text: '请先刷新并选择视频模型', type: 'error' })
+      setMessage({ text: '请先同步并选择视频模型', type: 'error' })
       return
     }
     if (!prompt.trim()) {
