@@ -137,7 +137,7 @@ export function fetchVideoTask(baseUrl: string, apiKey: string, taskId: string) 
 }
 
 export async function downloadVideoContent(baseUrl: string, apiKey: string, taskId: string, publicUrl?: string) {
-  const directUrl = publicUrl && isHttpUrl(publicUrl) ? publicUrl : ''
+  const directUrl = normalizeVideoContentUrl(publicUrl)
   const response = await fetch(directUrl || getUrl(baseUrl, `/v1/videos/${encodeURIComponent(taskId)}/content`), {
     ...(directUrl ? {} : { headers: getHeaders(apiKey) }),
     cache: 'no-store',
@@ -153,16 +153,29 @@ export async function downloadVideoContent(baseUrl: string, apiKey: string, task
 }
 
 export function getVideoContentUrl(task: VideoApiTask) {
-  return [task.video_url, task.url, task.result_url, task.download_url]
-    .find((value): value is string => typeof value === 'string' && isHttpUrl(value))
+  for (const value of [task.video_url, task.url, task.result_url, task.download_url]) {
+    const normalized = normalizeVideoContentUrl(value)
+    if (normalized) return normalized
+  }
 }
 
-function isHttpUrl(value: string) {
+function normalizeVideoContentUrl(value?: string) {
+  if (!value) return ''
   try {
     const url = new URL(value)
-    return url.protocol === 'https:' || url.protocol === 'http:'
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return ''
+    if (
+      (url.hostname === 'www.yyapi.cloud' || url.hostname === 'zl.yyapi.cloud') &&
+      /^\/public\/videos\/task_[A-Za-z0-9_-]+\/content$/.test(url.pathname)
+    ) {
+      url.protocol = 'https:'
+      url.host = 'media.yyapi.cloud'
+      url.search = ''
+      url.hash = ''
+    }
+    return url.toString()
   } catch {
-    return false
+    return ''
   }
 }
 

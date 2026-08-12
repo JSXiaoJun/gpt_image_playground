@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createVideoTask, downloadVideoContent, fetchVideoModelCapabilities, fetchVideoModels } from './videoApi'
+import { createVideoTask, downloadVideoContent, fetchVideoModelCapabilities, fetchVideoModels, getVideoContentUrl } from './videoApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -148,6 +148,25 @@ describe('videoApi', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       'https://zl.yyapi.cloud/v1/videos/task-1/content',
       { headers: { Authorization: 'Bearer sk-test' }, cache: 'no-store' },
+    )
+  })
+
+  it('normalizes legacy New API public links to the dedicated media domain', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('video', {
+      status: 200,
+      headers: { 'content-type': 'video/mp4' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const legacyUrl = 'https://www.yyapi.cloud/public/videos/task_legacy/content'
+    expect(getVideoContentUrl({ video_url: legacyUrl })).toBe(
+      'https://media.yyapi.cloud/public/videos/task_legacy/content',
+    )
+    await downloadVideoContent('https://zl.yyapi.cloud', 'sk-test', 'task_legacy', legacyUrl)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://media.yyapi.cloud/public/videos/task_legacy/content',
+      { cache: 'no-store' },
     )
   })
 })
