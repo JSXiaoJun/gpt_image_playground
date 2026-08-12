@@ -5,6 +5,7 @@ import {
   fetchVideoModelCapabilities,
   fetchVideoModels,
   fetchVideoTask,
+  getVideoContentUrl,
   getVideoTaskError,
   type VideoModelCapabilities,
 } from '../lib/videoApi'
@@ -17,6 +18,7 @@ type VideoTaskStatus = 'submitting' | 'queued' | 'processing' | 'completed' | 'f
 interface VideoTaskRecord {
   id: string
   publicTaskId?: string
+  videoUrl?: string
   prompt: string
   model: string
   aspectRatio: string
@@ -255,7 +257,7 @@ export default function VideoWorkspace() {
 
   const loadPreview = useCallback(async (task: VideoTaskRecord) => {
     if (!task.publicTaskId || videoPreviewRef.current?.taskId === task.id) return
-    const result = await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)
+    const result = await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId, task.videoUrl)
     if (videoPreviewRef.current) URL.revokeObjectURL(videoPreviewRef.current.url)
     const preview = { taskId: task.id, url: URL.createObjectURL(result.blob) }
     videoPreviewRef.current = preview
@@ -270,7 +272,7 @@ export default function VideoWorkspace() {
       const status = String(result.status ?? '').toLowerCase()
       const progress = typeof result.progress === 'number' ? result.progress : task.progress
       if (status === 'completed') {
-        const completed = { ...task, status: 'completed' as const, progress: 100, updatedAt: Date.now() }
+        const completed = { ...task, status: 'completed' as const, progress: 100, videoUrl: getVideoContentUrl(result) || task.videoUrl, updatedAt: Date.now() }
         updateTask(task.id, completed)
       } else if (status === 'failed' || status === 'cancelled') {
         updateTask(task.id, { status: 'failed', progress, error: getVideoTaskError(result) })
@@ -457,6 +459,7 @@ export default function VideoWorkspace() {
         })
         updateTask(localId, {
           publicTaskId: result.taskId,
+          videoUrl: getVideoContentUrl(result.task),
           status: result.task.status === 'processing' ? 'processing' : 'queued',
           progress: result.task.progress ?? 0,
         })
@@ -497,7 +500,7 @@ export default function VideoWorkspace() {
   const download = async (task: VideoTaskRecord) => {
     try {
       if (!task.publicTaskId) throw new Error('任务 ID 不存在')
-      const result = await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)
+      const result = await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId, task.videoUrl)
       const url = URL.createObjectURL(result.blob)
       const link = document.createElement('a')
       link.href = url

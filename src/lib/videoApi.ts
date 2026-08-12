@@ -34,6 +34,10 @@ export interface CreateVideoInput {
 export interface VideoApiTask {
   id?: string
   task_id?: string
+  video_url?: string
+  url?: string
+  result_url?: string
+  download_url?: string
   status?: string
   progress?: number
   error?: string | { message?: string } | null
@@ -132,9 +136,10 @@ export function fetchVideoTask(baseUrl: string, apiKey: string, taskId: string) 
   })
 }
 
-export async function downloadVideoContent(baseUrl: string, apiKey: string, taskId: string) {
-  const response = await fetch(getUrl(baseUrl, `/v1/videos/${encodeURIComponent(taskId)}/content`), {
-    headers: getHeaders(apiKey),
+export async function downloadVideoContent(baseUrl: string, apiKey: string, taskId: string, publicUrl?: string) {
+  const directUrl = publicUrl && isHttpUrl(publicUrl) ? publicUrl : ''
+  const response = await fetch(directUrl || getUrl(baseUrl, `/v1/videos/${encodeURIComponent(taskId)}/content`), {
+    ...(directUrl ? {} : { headers: getHeaders(apiKey) }),
     cache: 'no-store',
   })
   if (!response.ok) throw new Error(await getApiError(response))
@@ -145,6 +150,20 @@ export async function downloadVideoContent(baseUrl: string, apiKey: string, task
   const blob = await response.blob()
   if (!blob.size) throw new Error('下载的视频内容为空')
   return { blob, contentType }
+}
+
+export function getVideoContentUrl(task: VideoApiTask) {
+  return [task.video_url, task.url, task.result_url, task.download_url]
+    .find((value): value is string => typeof value === 'string' && isHttpUrl(value))
+}
+
+function isHttpUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' || url.protocol === 'http:'
+  } catch {
+    return false
+  }
 }
 
 export function getVideoTaskError(task: VideoApiTask) {

@@ -115,4 +115,39 @@ describe('videoApi', () => {
 
     await expect(downloadVideoContent('https://zl.yyapi.cloud', 'sk-test', 'task-1')).rejects.toThrow('视频响应类型无效')
   })
+
+  it('downloads a returned public media URL without sending the API key', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('video', {
+      status: 200,
+      headers: { 'content-type': 'video/mp4' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await downloadVideoContent(
+      'https://zl.yyapi.cloud',
+      'sk-test',
+      'task-1',
+      'https://media.yyapi.cloud/public/videos/task-1/content',
+    )
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://media.yyapi.cloud/public/videos/task-1/content',
+      { cache: 'no-store' },
+    )
+  })
+
+  it('keeps the authenticated fallback for historical tasks without a public URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('video', {
+      status: 200,
+      headers: { 'content-type': 'video/mp4' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await downloadVideoContent('https://zl.yyapi.cloud', 'sk-test', 'task-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://zl.yyapi.cloud/v1/videos/task-1/content',
+      { headers: { Authorization: 'Bearer sk-test' }, cache: 'no-store' },
+    )
+  })
 })
