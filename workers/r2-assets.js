@@ -97,7 +97,7 @@ export default {
         httpMetadata: { contentType },
         customMetadata: { origin, uploadedAt: new Date().toISOString() },
       })
-      return json({ key, url: `${url.origin}/asset/${id}.${extension}` }, 201, origin)
+      return json({ key, url: `${url.origin}/asset/${id}.${extension}?v=${id}` }, 201, origin)
     }
 
     const key = getObjectKey(url.pathname)
@@ -109,7 +109,9 @@ export default {
       if (!object) return new Response('Not found', { status: 404 })
       const headers = new Headers(corsHeaders(origin))
       object.writeHttpMetadata(headers)
-      headers.set('Cache-Control', 'private, max-age=3600')
+      headers.set('Cache-Control', 'private, no-store')
+      headers.set('CDN-Cache-Control', 'no-store')
+      headers.set('Cloudflare-CDN-Cache-Control', 'no-store')
       headers.set('ETag', object.httpEtag)
       headers.set('Accept-Ranges', 'bytes')
       if (rangeRequested && object.range && 'offset' in object.range && 'length' in object.range) {

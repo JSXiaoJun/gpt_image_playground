@@ -25,6 +25,8 @@ describe('r2 asset responses', () => {
     expect(get).toHaveBeenCalledWith('temp/02fc40a7-8086-4bd0-ae0f-e6d77a0b1443.png')
     expect(response.status).toBe(200)
     expect(response.headers.get('Content-Range')).toBeNull()
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+    expect(response.headers.get('CDN-Cache-Control')).toBe('no-store')
   })
 
   it('returns 206 only when the client requests a byte range', async () => {
