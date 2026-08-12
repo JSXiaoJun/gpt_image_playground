@@ -11,7 +11,7 @@ describe('videoApi', () => {
     }))
     vi.stubGlobal('fetch', fetchMock)
 
-    const result = await createVideoTask('https://zl.yyapi.cloud/', 'sk-test', {
+    const result = await createVideoTask('https://video-admin.yyapi.cloud/new-api/', 'sk-test', {
       model: 'gemini-omni-flash',
       prompt: '电影感运镜',
       aspectRatio: '16:9',
@@ -22,7 +22,7 @@ describe('videoApi', () => {
     })
 
     expect(result.taskId).toBe('task-public')
-    expect(fetchMock).toHaveBeenCalledWith('https://zl.yyapi.cloud/v1/videos', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('https://video-admin.yyapi.cloud/new-api/v1/videos', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
         model: 'gemini-omni-flash',

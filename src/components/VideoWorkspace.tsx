@@ -49,7 +49,7 @@ interface VideoConfig {
 const CONFIG_KEY = 'gpt-image-playground-video-config-v1'
 const TASKS_KEY = 'gpt-image-playground-video-tasks-v1'
 const CATALOG_KEY = 'gpt-image-playground-video-catalog-v1'
-const VIDEO_API_BASE_URL = 'https://zl.yyapi.cloud'
+const VIDEO_API_BASE_URL = 'https://video-admin.yyapi.cloud/new-api'
 const VIDEO_CAPABILITIES_BASE_URL = 'https://video-admin.yyapi.cloud'
 const DEFAULT_CONFIG: VideoConfig = {
   apiKey: '',
