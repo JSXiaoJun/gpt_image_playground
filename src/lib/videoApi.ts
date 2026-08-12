@@ -39,7 +39,7 @@ export interface VideoApiTask {
   result_url?: string
   download_url?: string
   status?: string
-  progress?: number
+  progress?: number | string
   error?: string | { message?: string } | null
   created_at?: number
   updated_at?: number
@@ -144,12 +144,27 @@ export async function downloadVideoContent(baseUrl: string, apiKey: string, task
   })
   if (!response.ok) throw new Error(await getApiError(response))
   const contentType = response.headers.get('content-type')?.split(';')[0].trim() || ''
-  if (!contentType.toLowerCase().startsWith('video/')) {
+  if (!contentType.toLowerCase().startsWith('video/') && contentType.toLowerCase() !== 'application/octet-stream') {
     throw new Error(`视频响应类型无效：${contentType || '未知'}`)
   }
   const blob = await response.blob()
   if (!blob.size) throw new Error('下载的视频内容为空')
-  return { blob, contentType }
+  return { blob, contentType, extension: getVideoExtension(contentType, response.headers.get('content-disposition')) }
+}
+
+export function normalizeVideoTaskStatus(value?: string) {
+  const status = String(value ?? '').trim().toLowerCase()
+  if (['completed', 'success', 'succeeded'].includes(status)) return 'completed' as const
+  if (['failed', 'failure', 'cancelled', 'canceled'].includes(status)) return 'failed' as const
+  if (['processing', 'in_progress', 'running'].includes(status)) return 'processing' as const
+  return 'queued' as const
+}
+
+export function normalizeVideoProgress(value: number | string | undefined, fallback = 0) {
+  const progress = typeof value === 'string' ? Number.parseFloat(value.replace(/%$/, '')) : value
+  return typeof progress === 'number' && Number.isFinite(progress)
+    ? Math.max(0, Math.min(100, Math.round(progress)))
+    : fallback
 }
 
 export function getVideoContentUrl(task: VideoApiTask) {
@@ -165,8 +180,12 @@ function normalizeVideoContentUrl(value?: string) {
     const url = new URL(value)
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return ''
     if (
+      !['media.yyapi.cloud', 'www.yyapi.cloud', 'zl.yyapi.cloud'].includes(url.hostname) ||
+      !/^\/public\/videos\/task_[A-Za-z0-9_-]+\/content$/.test(url.pathname)
+    ) return ''
+    if (
       (url.hostname === 'www.yyapi.cloud' || url.hostname === 'zl.yyapi.cloud') &&
-      /^\/public\/videos\/task_[A-Za-z0-9_-]+\/content$/.test(url.pathname)
+      url.pathname.startsWith('/public/videos/')
     ) {
       url.protocol = 'https:'
       url.host = 'media.yyapi.cloud'
@@ -177,6 +196,27 @@ function normalizeVideoContentUrl(value?: string) {
   } catch {
     return ''
   }
+}
+
+function getVideoExtension(contentType: string, contentDisposition: string | null) {
+  const extensionByType: Record<string, string> = {
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'video/quicktime': 'mov',
+    'video/mpeg': 'mpeg',
+    'video/ogg': 'ogv',
+    'video/x-msvideo': 'avi',
+    'video/x-matroska': 'mkv',
+    'video/3gpp': '3gp',
+    'video/3gpp2': '3g2',
+  }
+  const mapped = extensionByType[contentType.toLowerCase()]
+  if (mapped) return mapped
+  const fileName = contentDisposition?.match(/filename\*?=(?:UTF-8''|["']?)([^"';]+)/i)?.[1]
+  const extension = fileName?.split('.').pop()?.toLowerCase()
+  return extension && ['mp4', 'webm', 'mov', 'mpeg', 'mpg', 'ogv', 'avi', 'mkv', '3gp', '3g2'].includes(extension)
+    ? extension
+    : 'mp4'
 }
 
 export function getVideoTaskError(task: VideoApiTask) {

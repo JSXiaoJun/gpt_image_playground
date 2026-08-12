@@ -7,6 +7,8 @@ import {
   fetchVideoTask,
   getVideoContentUrl,
   getVideoTaskError,
+  normalizeVideoProgress,
+  normalizeVideoTaskStatus,
   type VideoModelCapabilities,
 } from '../lib/videoApi'
 import { getAudioDuration, getVideoDuration } from '../lib/videoDuration'
@@ -269,15 +271,15 @@ export default function VideoWorkspace() {
     pollingRef.current.add(task.id)
     try {
       const result = await fetchVideoTask(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)
-      const status = String(result.status ?? '').toLowerCase()
-      const progress = typeof result.progress === 'number' ? result.progress : task.progress
+      const status = normalizeVideoTaskStatus(result.status)
+      const progress = normalizeVideoProgress(result.progress, task.progress)
       if (status === 'completed') {
         const completed = { ...task, status: 'completed' as const, progress: 100, videoUrl: getVideoContentUrl(result) || task.videoUrl, updatedAt: Date.now() }
         updateTask(task.id, completed)
-      } else if (status === 'failed' || status === 'cancelled') {
+      } else if (status === 'failed') {
         updateTask(task.id, { status: 'failed', progress, error: getVideoTaskError(result) })
       } else {
-        updateTask(task.id, { status: status === 'processing' || status === 'in_progress' ? 'processing' : 'queued', progress })
+        updateTask(task.id, { status, progress })
       }
     } catch (err) {
       console.warn('Video task polling failed:', err)
@@ -460,8 +462,9 @@ export default function VideoWorkspace() {
         updateTask(localId, {
           publicTaskId: result.taskId,
           videoUrl: getVideoContentUrl(result.task),
-          status: result.task.status === 'processing' ? 'processing' : 'queued',
-          progress: result.task.progress ?? 0,
+          status: normalizeVideoTaskStatus(result.task.status),
+          progress: normalizeVideoProgress(result.task.progress),
+          error: normalizeVideoTaskStatus(result.task.status) === 'failed' ? getVideoTaskError(result.task) : undefined,
         })
       } catch (err) {
         updateTask(localId, { status: 'failed', error: err instanceof Error ? err.message : '创建任务失败' })
@@ -504,7 +507,7 @@ export default function VideoWorkspace() {
       const url = URL.createObjectURL(result.blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `${task.model}-${task.publicTaskId}.${result.contentType.includes('webm') ? 'webm' : 'mp4'}`
+      link.download = `${task.model}-${task.publicTaskId}.${result.extension}`
       link.click()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (err) {

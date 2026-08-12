@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createVideoTask, downloadVideoContent, fetchVideoModelCapabilities, fetchVideoModels, getVideoContentUrl } from './videoApi'
+import { createVideoTask, downloadVideoContent, fetchVideoModelCapabilities, fetchVideoModels, getVideoContentUrl, normalizeVideoProgress, normalizeVideoTaskStatus } from './videoApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -126,12 +126,12 @@ describe('videoApi', () => {
     await downloadVideoContent(
       'https://zl.yyapi.cloud',
       'sk-test',
-      'task-1',
-      'https://media.yyapi.cloud/public/videos/task-1/content',
+      'task_test_1',
+      'https://media.yyapi.cloud/public/videos/task_test_1/content',
     )
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://media.yyapi.cloud/public/videos/task-1/content',
+      'https://media.yyapi.cloud/public/videos/task_test_1/content',
       { cache: 'no-store' },
     )
   })
@@ -168,5 +168,46 @@ describe('videoApi', () => {
       'https://media.yyapi.cloud/public/videos/task_legacy/content',
       { cache: 'no-store' },
     )
+  })
+
+  it('rejects raw upstream and malformed public video URLs', () => {
+    expect(getVideoContentUrl({ video_url: 'https://asset.example/video.mp4' })).toBeUndefined()
+    expect(getVideoContentUrl({ video_url: 'https://media.yyapi.cloud/public/videos/not-public/content' })).toBeUndefined()
+    expect(getVideoContentUrl({ video_url: 'javascript:alert(1)' })).toBeUndefined()
+  })
+
+  it('normalizes task status aliases and string progress values', () => {
+    expect(normalizeVideoTaskStatus('SUCCESS')).toBe('completed')
+    expect(normalizeVideoTaskStatus('succeeded')).toBe('completed')
+    expect(normalizeVideoTaskStatus('IN_PROGRESS')).toBe('processing')
+    expect(normalizeVideoTaskStatus('running')).toBe('processing')
+    expect(normalizeVideoTaskStatus('FAILURE')).toBe('failed')
+    expect(normalizeVideoTaskStatus('cancelled')).toBe('failed')
+    expect(normalizeVideoTaskStatus('pending')).toBe('queued')
+    expect(normalizeVideoProgress('72.6%')).toBe(73)
+    expect(normalizeVideoProgress(120)).toBe(100)
+    expect(normalizeVideoProgress('invalid', 25)).toBe(25)
+  })
+
+  it.each([
+    ['video/mp4', null, 'mp4'],
+    ['video/webm', null, 'webm'],
+    ['video/quicktime', null, 'mov'],
+    ['video/mpeg', null, 'mpeg'],
+    ['video/ogg', null, 'ogv'],
+    ['video/x-msvideo', null, 'avi'],
+    ['video/x-matroska', null, 'mkv'],
+    ['video/3gpp', null, '3gp'],
+    ['video/3gpp2', null, '3g2'],
+    ['application/octet-stream', 'attachment; filename="result.webm"', 'webm'],
+    ['application/octet-stream', null, 'mp4'],
+  ])('accepts %s video responses and chooses .%s', async (contentType, contentDisposition, extension) => {
+    const headers = new Headers({ 'content-type': contentType })
+    if (contentDisposition) headers.set('content-disposition', contentDisposition)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('video', { status: 200, headers })))
+
+    const result = await downloadVideoContent('https://zl.yyapi.cloud', 'sk-test', 'task-format')
+
+    expect(result.extension).toBe(extension)
   })
 })
