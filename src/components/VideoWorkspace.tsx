@@ -180,6 +180,7 @@ export default function VideoWorkspace() {
   const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | 'audio' | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'error' | 'success' } | null>(null)
   const [videoPreview, setVideoPreview] = useState<{ taskId: string; url: string } | null>(null)
+  const [loadingPreviewTaskId, setLoadingPreviewTaskId] = useState<string | null>(null)
   const [assetPreview, setAssetPreview] = useState<{ kind: 'image' | 'video' | 'audio'; url: string; title: string } | null>(null)
   const pollingRef = useRef(new Set<string>())
   const videoPreviewRef = useRef<{ taskId: string; url: string } | null>(null)
@@ -264,7 +265,7 @@ export default function VideoWorkspace() {
   }, [videoPreview])
 
   useEffect(() => () => {
-    if (videoPreviewRef.current) URL.revokeObjectURL(videoPreviewRef.current.url)
+    if (videoPreviewRef.current?.url.startsWith('blob:')) URL.revokeObjectURL(videoPreviewRef.current.url)
   }, [])
 
   useEffect(() => {
@@ -281,13 +282,25 @@ export default function VideoWorkspace() {
   }, [])
 
   const loadPreview = useCallback(async (task: VideoTaskRecord) => {
-    if (!task.publicTaskId || videoPreviewRef.current?.taskId === task.id) return
-    const result = await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId, task.videoUrl)
-    if (videoPreviewRef.current) URL.revokeObjectURL(videoPreviewRef.current.url)
-    const preview = { taskId: task.id, url: URL.createObjectURL(result.blob) }
-    videoPreviewRef.current = preview
-    setVideoPreview(preview)
-  }, [config.apiKey])
+    if (!task.publicTaskId || videoPreviewRef.current?.taskId === task.id || loadingPreviewTaskId) return
+    setLoadingPreviewTaskId(task.id)
+    setMessage(null)
+    let streaming = false
+    try {
+      const savedPublicUrl = getVideoContentUrl({ video_url: task.videoUrl })
+      const latest = savedPublicUrl ? null : await fetchVideoTask(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)
+      const publicUrl = savedPublicUrl || (latest ? getVideoContentUrl(latest) : undefined)
+      const url = publicUrl || URL.createObjectURL((await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)).blob)
+      streaming = Boolean(publicUrl)
+      if (publicUrl !== task.videoUrl) updateTask(task.id, { videoUrl: publicUrl })
+      if (videoPreviewRef.current?.url.startsWith('blob:')) URL.revokeObjectURL(videoPreviewRef.current.url)
+      const preview = { taskId: task.id, url }
+      videoPreviewRef.current = preview
+      setVideoPreview(preview)
+    } finally {
+      if (!streaming) setLoadingPreviewTaskId(null)
+    }
+  }, [config.apiKey, loadingPreviewTaskId, updateTask])
 
   const pollTask = useCallback(async (task: VideoTaskRecord) => {
     if (!task.publicTaskId || pollingRef.current.has(task.id)) return
@@ -491,7 +504,7 @@ export default function VideoWorkspace() {
   const remove = async (task: VideoTaskRecord) => {
     setTasks((current) => current.filter((item) => item.id !== task.id))
     if (videoPreviewRef.current?.taskId === task.id) {
-      URL.revokeObjectURL(videoPreviewRef.current.url)
+      if (videoPreviewRef.current.url.startsWith('blob:')) URL.revokeObjectURL(videoPreviewRef.current.url)
       videoPreviewRef.current = null
       setVideoPreview(null)
     }
@@ -560,12 +573,28 @@ export default function VideoWorkspace() {
                 <article key={task.id} className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.08] dark:bg-white/[0.035]">
                   <div className="relative aspect-video bg-gray-950">
                     {videoPreview?.taskId === task.id ? (
-                      <video src={videoPreview.url} controls playsInline preload="metadata" className="h-full w-full object-contain" />
+                      <>
+                        <video
+                          src={videoPreview.url}
+                          controls
+                          playsInline
+                          preload="metadata"
+                          onLoadedMetadata={() => setLoadingPreviewTaskId(null)}
+                          onError={() => {
+                            videoPreviewRef.current = null
+                            setVideoPreview(null)
+                            setLoadingPreviewTaskId(null)
+                            setMessage({ text: '视频预览加载失败，请重试或下载后查看', type: 'error' })
+                          }}
+                          className="h-full w-full object-contain"
+                        />
+                        {loadingPreviewTaskId === task.id && <div className="absolute inset-0 flex items-center justify-center bg-gray-950/70"><div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-700 border-t-blue-500" /></div>}
+                      </>
                     ) : (
                       <div className="flex h-full flex-col items-center justify-center gap-3 text-gray-400">
                         {running ? <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-700 border-t-blue-500" /> : <svg className="h-10 w-10 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="m15 10 4.5-2.5a1 1 0 0 1 1.5.87v7.26a1 1 0 0 1-1.5.87L15 14M5 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z" strokeWidth="1.5" /></svg>}
                         <span className="text-xs">{getStatusLabel(task.status)}{running && task.progress ? ` ${task.progress}%` : ''}</span>
-                        {task.status === 'completed' && <button type="button" onClick={() => void loadPreview(task).catch((err) => setMessage({ text: err instanceof Error ? err.message : '视频预览加载失败', type: 'error' }))} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white transition hover:bg-white/20">加载预览</button>}
+                        {task.status === 'completed' && <button type="button" disabled={loadingPreviewTaskId !== null} onClick={() => void loadPreview(task).catch((err) => setMessage({ text: err instanceof Error ? err.message : '视频预览加载失败', type: 'error' }))} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white transition hover:bg-white/20 disabled:cursor-wait disabled:opacity-70">{loadingPreviewTaskId === task.id ? '加载中…' : '加载预览'}</button>}
                       </div>
                     )}
                     <div className="absolute left-2 top-2 flex gap-1.5">

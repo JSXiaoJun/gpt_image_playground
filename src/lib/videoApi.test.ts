@@ -194,6 +194,27 @@ describe('videoApi', () => {
     )
   })
 
+  it('extracts the public URL from the completed video response', () => {
+    const url = 'https://media.yyapi.cloud/public/videos/task_6OSxUguPhQYjPPo0Ziv7frPGTqbOIftU/content'
+    const task = {
+      object: 'video',
+      model: 'gemini-omni-flash',
+      status: 'completed',
+      progress: 100,
+      created_at: 1786602631,
+      updated_at: 1786602760,
+      error: null,
+      video_url: url,
+      url,
+      result_url: url,
+      download_url: url,
+    }
+
+    expect(normalizeVideoTaskStatus(task.status)).toBe('completed')
+    expect(normalizeVideoProgress(task.progress)).toBe(100)
+    expect(getVideoContentUrl(task)).toBe(url)
+  })
+
   it('rejects raw upstream and malformed public video URLs', () => {
     expect(getVideoContentUrl({ video_url: 'https://asset.example/video.mp4' })).toBeUndefined()
     expect(getVideoContentUrl({ video_url: 'https://media.yyapi.cloud/public/videos/not-public/content' })).toBeUndefined()
