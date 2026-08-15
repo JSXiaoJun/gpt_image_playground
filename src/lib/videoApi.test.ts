@@ -4,7 +4,7 @@ import { createVideoTask, downloadVideoContent, fetchVideoCatalog, fetchVideoMod
 afterEach(() => vi.unstubAllGlobals())
 
 describe('videoApi', () => {
-  it('maps the create payload and preserves task_id', async () => {
+  it.each(['16:9', '9:16'])('maps Omni %s into metadata and preserves task_id', async (aspectRatio) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ task_id: 'task-public', id: 'internal' }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -14,7 +14,7 @@ describe('videoApi', () => {
     const result = await createVideoTask('https://video-admin.yyapi.cloud/new-api/', 'sk-test', {
       model: 'gemini-omni-flash',
       prompt: '电影感运镜',
-      aspectRatio: '16:9',
+      aspectRatio,
       duration: 8,
       resolution: '720p',
       generateAudio: true,
@@ -27,9 +27,9 @@ describe('videoApi', () => {
       body: JSON.stringify({
         model: 'gemini-omni-flash',
         prompt: '电影感运镜',
-        aspect_ratio: '16:9',
+        metadata: { aspect_ratio: aspectRatio },
         duration: 8,
-        resolution: '720p',
+        resolution: '720P',
         generate_audio: true,
         image_urls: ['https://example.com/a.png', 'https://example.com/b.png'],
       }),
@@ -46,6 +46,7 @@ describe('videoApi', () => {
     await createVideoTask('https://zl.yyapi.cloud', 'sk-test', {
       model: 'manxue-933',
       prompt: '电影感角色短片',
+      aspectRatio: '16:9',
       duration: 15,
       generateAudio: true,
       imageUrls: ['https://example.com/main.png'],
@@ -57,6 +58,7 @@ describe('videoApi', () => {
       body: JSON.stringify({
         model: 'manxue-933',
         prompt: '电影感角色短片',
+        aspect_ratio: '16:9',
         duration: 15,
         generate_audio: true,
         image_urls: ['https://example.com/main.png'],

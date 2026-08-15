@@ -4,6 +4,7 @@ export interface VideoModelCapabilities {
   resolutions: string[]
   maxImages: number
   referenceVideo: boolean
+  maxVideos?: number
   maxAudios?: number
   maxReferences?: number
   minReferenceVideoDuration?: number
@@ -11,6 +12,8 @@ export interface VideoModelCapabilities {
   minAudioDuration?: number
   maxAudioDuration?: number
   maxTotalAudioDuration?: number
+  autoFace?: boolean
+  firstLastFrame?: boolean
   experimental?: boolean
 }
 
@@ -23,7 +26,11 @@ export interface CreateVideoInput {
   generateAudio?: boolean
   imageUrls?: string[]
   referenceVideo?: string
+  videoUrls?: string[]
   audioUrls?: string[]
+  autoFace?: boolean
+  firstFrameUrl?: string
+  lastFrameUrl?: string
 }
 
 export interface VideoApiTask {
@@ -36,6 +43,7 @@ export interface VideoApiTask {
   status?: string
   progress?: number | string
   error?: string | { message?: string } | null
+  metadata?: { url?: unknown; [key: string]: unknown } | null
   created_at?: number
   updated_at?: number
 }
@@ -98,17 +106,22 @@ export async function fetchVideoCatalog(baseUrl: string) {
 }
 
 export async function createVideoTask(baseUrl: string, apiKey: string, input: CreateVideoInput) {
+  const omni = input.model === 'gemini-omni-flash'
   const body = {
     model: input.model,
     prompt: input.prompt,
-    ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
+    ...(input.aspectRatio ? omni ? { metadata: { aspect_ratio: input.aspectRatio } } : { aspect_ratio: input.aspectRatio } : {}),
     ...(input.duration ? { duration: input.duration } : {}),
-    ...(input.resolution ? { resolution: input.resolution } : {}),
+    ...(input.resolution ? { resolution: omni ? input.resolution.toUpperCase() : input.resolution } : {}),
     ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
     ...(input.imageUrls?.length ? { image_urls: input.imageUrls } : {}),
-    ...(input.referenceVideo ? { reference_video: input.referenceVideo } : {}),
+    ...(input.videoUrls?.[0] || input.referenceVideo ? { reference_video: input.videoUrls?.[0] || input.referenceVideo } : {}),
     ...(input.audioUrls?.length ? { audio_urls: input.audioUrls } : {}),
   }
+  return submitVideoTask(baseUrl, apiKey, body)
+}
+
+export async function submitVideoTask(baseUrl: string, apiKey: string, body: Record<string, unknown>) {
   const task = await fetchJson<VideoApiTask>(getUrl(baseUrl, '/v1/videos'), {
     method: 'POST',
     headers: getHeaders(apiKey, true),
@@ -126,10 +139,17 @@ export function fetchVideoTask(baseUrl: string, apiKey: string, taskId: string) 
   })
 }
 
-export async function downloadVideoContent(baseUrl: string, apiKey: string, taskId: string, publicUrl?: string) {
-  const directUrl = normalizeVideoContentUrl(publicUrl)
+export async function downloadVideoContent(
+  baseUrl: string,
+  apiKey: string,
+  taskId: string,
+  publicUrl?: string,
+  normalizeUrl = normalizeVideoContentUrl,
+  authorizeDirectUrl: (url: string) => boolean = () => false,
+) {
+  const directUrl = normalizeUrl(publicUrl)
   const response = await fetch(directUrl || getUrl(baseUrl, `/v1/videos/${encodeURIComponent(taskId)}/content`), {
-    ...(directUrl ? {} : { headers: getHeaders(apiKey) }),
+    ...(!directUrl || authorizeDirectUrl(directUrl) ? { headers: getHeaders(apiKey) } : {}),
     cache: 'no-store',
   })
   if (!response.ok) throw new Error(await getApiError(response))
@@ -157,9 +177,9 @@ export function normalizeVideoProgress(value: number | string | undefined, fallb
     : fallback
 }
 
-export function getVideoContentUrl(task: VideoApiTask) {
-  for (const value of [task.video_url, task.url, task.result_url, task.download_url]) {
-    const normalized = normalizeVideoContentUrl(value)
+export function getVideoContentUrl(task: VideoApiTask, normalizeUrl = normalizeVideoContentUrl) {
+  for (const value of [task.video_url, task.url, task.result_url, task.download_url, task.metadata?.url]) {
+    const normalized = normalizeUrl(typeof value === 'string' ? value : undefined)
     if (normalized) return normalized
   }
 }
