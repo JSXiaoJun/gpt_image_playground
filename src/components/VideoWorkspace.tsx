@@ -12,7 +12,7 @@ import {
 } from '../lib/videoApi'
 import { getAudioDuration, getVideoDuration } from '../lib/videoDuration'
 import { uploadR2Asset } from '../lib/r2AssetUpload'
-import { DownloadIcon, RefreshIcon, SettingsIcon, TrashIcon } from './icons'
+import { ArrowDownIcon, DownloadIcon, PlusIcon, RefreshIcon, SettingsIcon, TrashIcon } from './icons'
 
 type VideoTaskStatus = 'submitting' | 'queued' | 'processing' | 'completed' | 'failed'
 
@@ -175,6 +175,8 @@ export default function VideoWorkspace() {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | 'running' | 'completed' | 'failed'>('all')
   const [showConfig, setShowConfig] = useState(false)
+  const [showAssets, setShowAssets] = useState(false)
+  const [promptFocused, setPromptFocused] = useState(false)
   const [loadingModels, setLoadingModels] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | 'audio' | null>(null)
@@ -184,12 +186,15 @@ export default function VideoWorkspace() {
   const [assetPreview, setAssetPreview] = useState<{ kind: 'image' | 'video' | 'audio'; url: string; title: string } | null>(null)
   const pollingRef = useRef(new Set<string>())
   const previewFallbackRef = useRef(new Set<string>())
+  const promptRef = useRef<HTMLTextAreaElement>(null)
   const videoPreviewRef = useRef<{ taskId: string; url: string } | null>(null)
   const tasksRef = useRef<VideoTaskRecord[]>(tasks)
 
   const capabilities = modelCapabilities[config.model] ?? DEFAULT_CAPABILITIES
   const imageUrls = imageUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
   const audioUrls = audioUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
+  const referenceCount = imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0)
+  const referenceLimit = capabilities.maxReferences ?? capabilities.maxImages + (capabilities.referenceVideo ? 1 : 0) + (capabilities.maxAudios ?? 0)
 
   const uploadAssets = async (files: File[], kind: 'image' | 'video' | 'audio') => {
     if (!files.length) return
@@ -536,6 +541,8 @@ export default function VideoWorkspace() {
     }
     setSubmitting(false)
     setPrompt('')
+    promptRef.current?.blur()
+    setPromptFocused(false)
   }
 
   const remove = async (task: VideoTaskRecord) => {
@@ -562,6 +569,7 @@ export default function VideoWorkspace() {
     setReferenceVideo(task.referenceVideo)
     setAudioUrlText((task.audioUrls ?? []).join('\n'))
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
+    window.requestAnimationFrame(() => promptRef.current?.focus())
   }
 
   const download = async (task: VideoTaskRecord) => {
@@ -589,7 +597,7 @@ export default function VideoWorkspace() {
 
   return (
     <>
-      <main className="safe-area-x mx-auto max-w-7xl pb-[310px]">
+      <main className={`safe-area-x mx-auto max-w-7xl transition-[padding] duration-200 ${showAssets || showConfig ? 'pb-[560px]' : promptFocused ? 'pb-[260px]' : 'pb-[180px]'}`}>
         <div className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <svg className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" strokeWidth="2" /><path d="m21 21-4.3-4.3" strokeWidth="2" /></svg>
@@ -679,64 +687,75 @@ export default function VideoWorkspace() {
         </div>
       )}
 
-      <div data-no-drag-select className="safe-area-x fixed inset-x-0 bottom-0 z-30 pb-[calc(16px+env(safe-area-inset-bottom,0px))]">
-        <div className="mx-auto max-w-5xl overflow-visible rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-[0_-8px_40px_rgba(0,0,0,0.08)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-gray-950/95 sm:p-4">
+      <div data-no-drag-select className="safe-area-x fixed inset-x-0 bottom-0 z-30 pb-[calc(12px+env(safe-area-inset-bottom,0px))] sm:pb-[calc(16px+env(safe-area-inset-bottom,0px))]">
+        <div className="mx-auto max-w-5xl overflow-hidden rounded-xl border border-gray-200 bg-white/95 p-2 shadow-[0_-8px_32px_rgba(0,0,0,0.08)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-gray-950/95 sm:p-3">
           {showConfig && (
-            <div className="mb-3 grid gap-3 border-b border-gray-100 pb-3 dark:border-white/[0.06] sm:grid-cols-[1fr_1fr_auto]">
-              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">接口地址</span><input value={VIDEO_API_BASE_URL} readOnly aria-readonly="true" className="h-10 w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-100 px-3 text-sm text-gray-500 outline-none dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-400" /></label>
-              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">API Key</span><input type="password" value={config.apiKey} onChange={(e) => setConfig({ ...config, apiKey: e.target.value })} placeholder="sk-..." className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
-              <button type="button" onClick={() => void loadModels()} disabled={loadingModels} className="self-end rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900">{loadingModels ? '同步中' : '同步模型'}</button>
+            <div className="mb-2 grid gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04] sm:grid-cols-[1fr_1fr_auto]">
+              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">接口地址</span><input value={VIDEO_API_BASE_URL} readOnly aria-readonly="true" className="h-9 w-full cursor-not-allowed rounded-lg border border-gray-200 bg-white px-3 text-xs text-gray-500 outline-none dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-400" /></label>
+              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">API Key</span><input type="password" value={config.apiKey} onChange={(e) => setConfig({ ...config, apiKey: e.target.value })} placeholder="sk-..." className="h-9 w-full rounded-lg border border-gray-200 bg-white px-3 text-xs outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-gray-900 dark:text-white" /></label>
+              <button type="button" onClick={() => void loadModels()} disabled={loadingModels} className="self-end rounded-lg bg-gray-900 px-4 py-2 text-xs font-medium text-white transition hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900">{loadingModels ? '同步中' : '同步模型'}</button>
             </div>
           )}
-          {message && <div className={`mb-3 flex items-center justify-between rounded-lg px-3 py-2 text-xs ${message.type === 'error' ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'}`}><span>{message.text}</span><button type="button" onClick={() => setMessage(null)} className="px-1 text-base leading-none" aria-label="关闭提示">×</button></div>}
-          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') void submit() }} placeholder="描述镜头、主体动作、场景和风格…" rows={2} className="w-full resize-none bg-transparent px-1 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400 dark:text-white" />
-          <div className="mt-2 grid gap-2 border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:grid-cols-2">
-              <div>
-                <span className="mb-1 block text-[11px] text-gray-400">参考图片（最多 {capabilities.maxImages} 张）</span>
-                <div className="flex min-h-[58px] flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
-                  {imageUrls.length ? imageUrls.map((url, idx) => (
-                    <div key={`${url}-${idx}`} className="group relative h-10 w-10 flex-none overflow-hidden rounded-md border border-gray-200 bg-white dark:border-white/[0.1] dark:bg-gray-900">
-                      <button type="button" onClick={() => setAssetPreview({ kind: 'image', url, title: `参考图片 ${idx + 1}` })} title="查看图片" className="absolute inset-0"><img src={url} alt={`参考图片 ${idx + 1}`} className="h-full w-full object-cover" /></button>
-                      <button type="button" onClick={() => setImageUrlText(imageUrls.filter((_, imageIdx) => imageIdx !== idx).join('\n'))} title="移除图片" aria-label={`移除参考图片 ${idx + 1}`} className="absolute right-0.5 top-0.5 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/65 text-white transition hover:bg-red-600"><TrashIcon className="h-3 w-3" /></button>
+          {message && <div className={`mb-2 flex items-start justify-between gap-2 rounded-lg px-3 py-2 text-xs ${message.type === 'error' ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'}`}><span className="line-clamp-2">{message.text}</span><button type="button" onClick={() => setMessage(null)} className="flex-none px-1 text-base leading-none" aria-label="关闭提示">×</button></div>}
+          {showAssets && (
+            <div className="mb-2 max-h-[42vh] overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-white/[0.08] dark:bg-white/[0.04]">
+              {capabilities.maxImages || capabilities.referenceVideo || capabilities.maxAudios ? (
+                <div className="grid gap-4 sm:grid-cols-3">
+                  {Boolean(capabilities.maxImages) && <section className="min-w-0">
+                    <div className="mb-2 flex items-center justify-between"><span className="text-xs font-medium text-gray-600 dark:text-gray-300">参考图片</span><span className="text-[11px] text-gray-400">{imageUrls.length}/{capabilities.maxImages}</span></div>
+                    <div className="flex min-h-11 flex-wrap items-center gap-2">
+                      {imageUrls.map((url, idx) => (
+                        <div key={`${url}-${idx}`} className="group relative h-11 w-11 flex-none overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-white/[0.1] dark:bg-gray-900">
+                          <button type="button" onClick={() => setAssetPreview({ kind: 'image', url, title: `参考图片 ${idx + 1}` })} title="查看图片" className="absolute inset-0"><img src={url} alt={`参考图片 ${idx + 1}`} className="h-full w-full object-cover" /></button>
+                          <button type="button" onClick={() => setImageUrlText(imageUrls.filter((_, imageIdx) => imageIdx !== idx).join('\n'))} title="移除图片" aria-label={`移除参考图片 ${idx + 1}`} className="absolute right-0.5 top-0.5 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/65 text-white transition hover:bg-red-600"><TrashIcon className="h-3 w-3" /></button>
+                        </div>
+                      ))}
+                      <label title="上传参考图片" className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg border border-dashed border-gray-300 text-gray-400 transition hover:border-blue-400 hover:text-blue-600 dark:border-white/[0.15]"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'image') }} />{uploadingAsset === 'image' ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" /> : <PlusIcon className="h-4 w-4" />}</label>
                     </div>
-                  )) : <span className="px-1 text-xs text-gray-400">尚未上传图片</span>}
+                  </section>}
+                  {capabilities.referenceVideo && <section className="min-w-0">
+                    <div className="mb-2 flex items-center justify-between"><span className="text-xs font-medium text-gray-600 dark:text-gray-300">参考视频</span><span className="text-[11px] text-gray-400">{capabilities.minReferenceVideoDuration ?? 0}–{capabilities.maxReferenceVideoDuration ?? 30}s</span></div>
+                    <div className="flex min-h-11 items-center gap-2">
+                      {referenceVideo && <div className="relative h-11 min-w-0 flex-1 overflow-hidden rounded-lg bg-gray-900"><button type="button" onClick={() => setAssetPreview({ kind: 'video', url: referenceVideo, title: '参考视频' })} className="flex h-full w-full items-center gap-2 px-2 text-left text-xs text-white"><video src={referenceVideo} muted playsInline preload="metadata" className="h-9 w-14 flex-none bg-black object-cover" /><span className="truncate">查看视频</span></button><button type="button" onClick={() => setReferenceVideo('')} title="移除视频" aria-label="移除参考视频" className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/65 text-white hover:bg-red-600"><TrashIcon className="h-3 w-3" /></button></div>}
+                      {!referenceVideo && <label title="上传参考视频" className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg border border-dashed border-gray-300 text-gray-400 transition hover:border-blue-400 hover:text-blue-600 dark:border-white/[0.15]"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'video') }} />{uploadingAsset === 'video' ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" /> : <PlusIcon className="h-4 w-4" />}</label>}
+                    </div>
+                  </section>}
+                  {Boolean(capabilities.maxAudios) && <section className="min-w-0">
+                    <div className="mb-2 flex items-center justify-between"><span className="text-xs font-medium text-gray-600 dark:text-gray-300">参考音频</span><span className="text-[11px] text-gray-400">{audioUrls.length}/{capabilities.maxAudios}</span></div>
+                    <div className="flex min-h-11 flex-wrap items-center gap-2">
+                      {audioUrls.map((url, idx) => <div key={`${url}-${idx}`} className="flex h-9 max-w-full items-center rounded-lg border border-gray-200 bg-white dark:border-white/[0.08] dark:bg-gray-900"><button type="button" onClick={() => setAssetPreview({ kind: 'audio', url, title: `参考音频 ${idx + 1}` })} className="max-w-28 truncate px-2 text-xs text-gray-600 dark:text-gray-300">音频 {idx + 1}</button><button type="button" onClick={() => setAudioUrlText(audioUrls.filter((_, audioIdx) => audioIdx !== idx).join('\n'))} title="移除音频" aria-label={`移除参考音频 ${idx + 1}`} className="flex h-8 w-7 items-center justify-center text-gray-400 hover:text-red-500"><TrashIcon className="h-3.5 w-3.5" /></button></div>)}
+                      <label title="上传参考音频" className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-dashed border-gray-300 text-gray-400 transition hover:border-blue-400 hover:text-blue-600 dark:border-white/[0.15]"><input type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/ogg,audio/aac" multiple className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'audio') }} />{uploadingAsset === 'audio' ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" /> : <PlusIcon className="h-4 w-4" />}</label>
+                    </div>
+                  </section>}
                 </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
+              ) : <p className="text-center text-xs text-gray-400">当前模型不支持参考素材</p>}
+            </div>
+          )}
+          <textarea
+            ref={promptRef}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onFocus={() => setPromptFocused(true)}
+            onBlur={(e) => { e.currentTarget.scrollTop = 0; setPromptFocused(false) }}
+            onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') void submit() }}
+            placeholder="描述镜头、主体动作、场景和风格…"
+            aria-label="视频提示词"
+            rows={1}
+            className={`block w-full resize-none bg-transparent px-2 py-2 text-sm leading-6 text-gray-900 outline-none transition-[height] duration-200 placeholder:text-gray-400 dark:text-white ${promptFocused ? 'h-28 overflow-y-auto' : 'h-10 overflow-hidden'}`}
+          />
+          <div className="flex items-center gap-1.5 border-t border-gray-100 pt-2 dark:border-white/[0.06]">
+            <button type="button" onClick={() => { setShowAssets((current) => !current); setShowConfig(false) }} title="管理参考素材" aria-label="管理参考素材" className={`flex h-9 flex-none items-center gap-1.5 rounded-lg border px-2 text-xs transition ${showAssets ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-300' : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300'}`}><PlusIcon className="h-4 w-4" /><span className="hidden sm:inline">素材</span><span className="text-[11px] text-gray-400">{referenceCount}/{referenceLimit}</span></button>
+            <div className="min-w-0 flex-1 overflow-x-auto">
+              <div className="flex w-max items-center gap-1.5">
+                <label className="flex h-9 items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 dark:border-white/[0.08] dark:bg-white/[0.04]"><span className="text-[11px] text-gray-400">模型</span><select aria-label="视频模型" value={config.model} onChange={(e) => setConfig({ ...config, model: e.target.value })} className="max-w-40 bg-transparent text-xs text-gray-700 outline-none dark:text-gray-200"><option value="">选择模型</option>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+                <label className="flex h-9 items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 dark:border-white/[0.08] dark:bg-white/[0.04]"><span className="text-[11px] text-gray-400">比例</span><select aria-label="视频比例" value={config.aspectRatio} onChange={(e) => setConfig({ ...config, aspectRatio: e.target.value })} className="bg-transparent text-xs text-gray-700 outline-none dark:text-gray-200">{capabilities.ratios.map((value) => <option key={value}>{value}</option>)}</select></label>
+                <label className="flex h-9 items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 dark:border-white/[0.08] dark:bg-white/[0.04]"><span className="text-[11px] text-gray-400">时长</span><select aria-label="视频时长" value={config.duration} onChange={(e) => setConfig({ ...config, duration: Number(e.target.value) })} className="bg-transparent text-xs text-gray-700 outline-none dark:text-gray-200">{capabilities.durations.map((value) => <option key={value} value={value}>{value ? `${value}s` : '自动'}</option>)}</select></label>
+                <label className="flex h-9 items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 dark:border-white/[0.08] dark:bg-white/[0.04]"><span className="text-[11px] text-gray-400">分辨率</span>{capabilities.resolutions.length > 1 ? <select aria-label="视频分辨率" value={config.resolution} onChange={(e) => setConfig({ ...config, resolution: e.target.value })} className="bg-transparent text-xs text-gray-700 outline-none dark:text-gray-200">{capabilities.resolutions.map((value) => <option key={value}>{value}</option>)}</select> : <span className="text-xs text-gray-700 dark:text-gray-200">{capabilities.resolutions[0] ?? '自动'}</span>}</label>
+                <label className="flex h-9 items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 dark:border-white/[0.08] dark:bg-white/[0.04]"><span className="text-[11px] text-gray-400">数量</span><select aria-label="生成数量" value={config.count} onChange={(e) => setConfig({ ...config, count: Number(e.target.value) })} className="bg-transparent text-xs text-gray-700 outline-none dark:text-gray-200">{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
               </div>
-              {capabilities.referenceVideo && <div>
-                <span className="mb-1 block text-[11px] text-gray-400">参考视频（{capabilities.minReferenceVideoDuration ?? 0}–{capabilities.maxReferenceVideoDuration ?? 30} 秒）</span>
-                <div className="flex min-h-[58px] items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
-                  {referenceVideo ? <>
-                    <button type="button" onClick={() => setAssetPreview({ kind: 'video', url: referenceVideo, title: '参考视频' })} className="flex h-10 min-w-0 flex-1 items-center gap-3 overflow-hidden rounded bg-gray-900 px-3 text-left text-xs text-white"><video src={referenceVideo} muted playsInline preload="metadata" className="h-10 w-16 flex-none bg-black object-cover" /><span>查看参考视频</span></button>
-                    <button type="button" onClick={() => setReferenceVideo('')} title="移除视频" aria-label="移除参考视频" className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
-                  </> : <span className="px-1 text-xs text-gray-400">尚未上传视频</span>}
-                </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
-              </div>}
-              {capabilities.maxAudios && <div>
-                <span className="mb-1 block text-[11px] text-gray-400">参考音频（最多 {capabilities.maxAudios} 个，总时长 15 秒）</span>
-                <div className="flex min-h-[58px] flex-col justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
-                  {audioUrls.length ? audioUrls.map((url, idx) => (
-                    <div key={`${url}-${idx}`} className="flex min-w-0 items-center gap-2">
-                      <button type="button" onClick={() => setAssetPreview({ kind: 'audio', url, title: `参考音频 ${idx + 1}` })} className="h-8 min-w-0 flex-1 truncate rounded bg-white px-3 text-left text-xs text-gray-600 transition hover:bg-gray-100 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1]">播放参考音频 {idx + 1}</button>
-                      <button type="button" onClick={() => setAudioUrlText(audioUrls.filter((_, audioIdx) => audioIdx !== idx).join('\n'))} title="移除音频" aria-label={`移除参考音频 ${idx + 1}`} className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
-                    </div>
-                  )) : <span className="px-1 text-xs text-gray-400">尚未上传音频</span>}
-                </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/ogg,audio/aac" multiple className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'audio') }} />{uploadingAsset === 'audio' ? '上传中…' : '上传音频'}</label>
-              </div>}
-          </div>
-          <div className="mt-3 flex flex-wrap items-end gap-2">
-            <label className="min-w-[170px] flex-1 sm:flex-none"><span className="mb-1 block text-[11px] text-gray-400">模型 {capabilities.experimental ? '· 测试中' : ''}</span><select value={config.model} onChange={(e) => setConfig({ ...config, model: e.target.value })} className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none dark:border-white/[0.08] dark:bg-gray-900 dark:text-white"><option value="">选择模型</option>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
-            <label><span className="mb-1 block text-[11px] text-gray-400">比例</span><select value={config.aspectRatio} onChange={(e) => setConfig({ ...config, aspectRatio: e.target.value })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.ratios.map((value) => <option key={value}>{value}</option>)}</select></label>
-            <label><span className="mb-1 block text-[11px] text-gray-400">时长</span><select value={config.duration} onChange={(e) => setConfig({ ...config, duration: Number(e.target.value) })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.durations.map((value) => <option key={value} value={value}>{value ? `${value}s` : '自动'}</option>)}</select></label>
-            <label><span className="mb-1 block text-[11px] text-gray-400">分辨率</span>{capabilities.resolutions.length > 1
-              ? <select value={config.resolution} onChange={(e) => setConfig({ ...config, resolution: e.target.value })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.resolutions.map((value) => <option key={value}>{value}</option>)}</select>
-              : <span className="flex h-10 min-w-[76px] items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs text-gray-700 dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-200">{capabilities.resolutions[0] ?? '自动'}</span>}
-            </label>
-            <label><span className="mb-1 block text-[11px] text-gray-400">数量</span><select value={config.count} onChange={(e) => setConfig({ ...config, count: Number(e.target.value) })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
-            <button type="button" onClick={() => setShowConfig(!showConfig)} title="视频接口配置" aria-label="视频接口配置" className={`flex h-10 w-10 items-center justify-center rounded-lg border transition ${showConfig ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10' : 'border-gray-200 text-gray-500 dark:border-white/[0.08]'}`}><SettingsIcon className="h-4 w-4" /></button>
-            <button type="button" onClick={() => void submit()} disabled={submitting} className="ml-auto flex h-10 min-w-[92px] items-center justify-center rounded-lg bg-blue-600 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting ? '提交中' : '生成视频'}</button>
+            </div>
+            <button type="button" onClick={() => { setShowConfig((current) => !current); setShowAssets(false) }} title="视频接口配置" aria-label="视频接口配置" className={`flex h-9 w-9 flex-none items-center justify-center rounded-lg border transition ${showConfig ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-300' : 'border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-white/[0.08] dark:hover:bg-white/[0.04]'}`}><SettingsIcon className="h-4 w-4" /></button>
+            <button type="button" onClick={() => void submit()} disabled={submitting} title="生成视频" aria-label="生成视频" className="flex h-10 w-10 flex-none items-center justify-center rounded-lg bg-blue-600 text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <ArrowDownIcon className="h-4 w-4 rotate-180" />}</button>
           </div>
         </div>
       </div>
