@@ -45,8 +45,12 @@ function getUrl(baseUrl: string, path: string) {
 }
 
 function getHeaders(apiKey: string, json = false) {
+  const normalizedApiKey = apiKey.trim()
+  if (normalizedApiKey && /[^\x20-\x7e]/.test(normalizedApiKey)) {
+    throw new Error('API Key 必须只包含 ASCII 字符')
+  }
   return {
-    Authorization: `Bearer ${apiKey}`,
+    Authorization: `Bearer ${normalizedApiKey}`,
     ...(json ? { 'Content-Type': 'application/json' } : {}),
   }
 }

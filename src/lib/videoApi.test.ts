@@ -203,6 +203,21 @@ describe('videoApi', () => {
     )
   })
 
+  it('trims unicode whitespace before sending the API key header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('video', {
+      status: 200,
+      headers: { 'content-type': 'video/mp4' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await downloadVideoContent('https://zl.yyapi.cloud', '\u3000sk-test\n', 'task-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://zl.yyapi.cloud/v1/videos/task-1/content',
+      { headers: { Authorization: 'Bearer sk-test' }, cache: 'no-store' },
+    )
+  })
+
   it('normalizes legacy New API public links to the dedicated media domain', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('video', {
       status: 200,
