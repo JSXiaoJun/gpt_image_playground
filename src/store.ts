@@ -58,6 +58,8 @@ import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib
 import { isInterruptedTaskError, OPENAI_INTERRUPTED_ERROR } from './lib/taskStatus'
 import { hasPersistentProxyJob, readPersistentProxyJob, type PersistentProxyJobResponse } from './lib/persistentProxyFetch'
 import { addJobLog } from './lib/jobLogs'
+import { clearWorkspaceConversations, createWorkspaceConversation, ensureWorkspaceConversation, getActiveWorkspaceConversationId, getWorkspaceConversationState, importWorkspaceConversations, syncWorkspaceConversationStats, touchWorkspaceConversation } from './lib/workspaceConversations'
+import { clearVideoWorkspaceData } from './lib/videoWorkspaceStorage'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -716,6 +718,7 @@ export function getPersistedState(state: AppState) {
     galleryInputDraft: settings.persistInputOnRestart && galleryInputDraft
       ? { ...galleryInputDraft, inputImages: galleryInputDraft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) }
       : null,
+    galleryConversationDrafts: settings.persistInputOnRestart ? getPersistableGalleryConversationDrafts(state) : {},
     ...(agentConversationMigrationPending && !agentConversationPersistenceReady
       ? { agentConversations: getPersistableAgentConversations(state.agentConversations) }
       : {}),
@@ -765,6 +768,14 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
         maskEditorImageId: null,
       })
     : null
+  const activeGalleryConversationId = getActiveWorkspaceConversationId('image')
+  const galleryConversationDrafts = settings.persistInputOnRestart
+    ? normalizeAgentInputDraftsByKey(persisted.galleryConversationDrafts)
+    : {}
+  if (activeGalleryConversationId && galleryInputDraft && !galleryConversationDrafts[activeGalleryConversationId]) {
+    galleryConversationDrafts[activeGalleryConversationId] = galleryInputDraft
+  }
+  const activeGalleryDraft = activeGalleryConversationId ? galleryConversationDrafts[activeGalleryConversationId] ?? galleryInputDraft : galleryInputDraft
   const normalizedAgentInputDrafts = hasPersistedAgentConversations
     ? normalizeAgentInputDrafts(persisted.agentInputDrafts, agentConversations)
     : normalizeAgentInputDraftsByKey(persisted.agentInputDrafts)
@@ -793,6 +804,7 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     settings,
     appMode,
     galleryInputDraft: galleryInputDraft && !isEmptyAgentInputDraft(galleryInputDraft) ? galleryInputDraft : null,
+    galleryConversationDrafts,
     agentConversations,
     activeAgentConversationId,
     agentInputDrafts,
@@ -806,10 +818,10 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     supportPromptDismissed: Boolean(persisted.supportPromptDismissed),
     supportPromptOpen: Boolean(persisted.supportPromptOpen),
     supportPromptSkippedForImportedData: Boolean(persisted.supportPromptSkippedForImportedData),
-    prompt: restoredAgentDraft ? restoredAgentDraft.prompt : galleryInputDraft?.prompt ?? '',
-    inputImages: restoredAgentDraft ? restoredAgentDraft.inputImages : galleryInputDraft?.inputImages ?? [],
-    maskDraft: restoredAgentDraft ? restoredAgentDraft.maskDraft : galleryInputDraft?.maskDraft ?? null,
-    maskEditorImageId: restoredAgentDraft ? restoredAgentDraft.maskEditorImageId : galleryInputDraft?.maskEditorImageId ?? null,
+    prompt: restoredAgentDraft ? restoredAgentDraft.prompt : activeGalleryDraft?.prompt ?? '',
+    inputImages: restoredAgentDraft ? restoredAgentDraft.inputImages : activeGalleryDraft?.inputImages ?? [],
+    maskDraft: restoredAgentDraft ? restoredAgentDraft.maskDraft : activeGalleryDraft?.maskDraft ?? null,
+    maskEditorImageId: restoredAgentDraft ? restoredAgentDraft.maskEditorImageId : activeGalleryDraft?.maskEditorImageId ?? null,
   }
 }
 
@@ -842,6 +854,9 @@ interface AppState {
   maskEditorImageId: string | null
   setMaskEditorImageId: (id: string | null) => void
   galleryInputDraft: AgentInputDraft | null
+  galleryConversationDrafts: Record<string, AgentInputDraft>
+  switchGalleryConversation: (previousId: string | null, nextId: string) => void
+  deleteGalleryConversationDraft: (id: string, nextId?: string) => void
 
   // 参数
   params: TaskParams
@@ -1144,7 +1159,7 @@ function restoreAgentInputDraftState(drafts: Record<string, AgentInputDraft>, co
 function syncActiveInputDraft<T extends Partial<AgentInputDraft>>(
   state: AppState,
   patch: T,
-): T & { agentInputDrafts?: Record<string, AgentInputDraft>; galleryInputDraft?: AgentInputDraft | null } {
+): T & { agentInputDrafts?: Record<string, AgentInputDraft>; galleryInputDraft?: AgentInputDraft | null; galleryConversationDrafts?: Record<string, AgentInputDraft> } {
   const draft: AgentInputDraft = {
     prompt: patch.prompt ?? state.prompt,
     inputImages: patch.inputImages ?? state.inputImages,
@@ -1152,9 +1167,11 @@ function syncActiveInputDraft<T extends Partial<AgentInputDraft>>(
     maskEditorImageId: patch.maskEditorImageId !== undefined ? patch.maskEditorImageId : state.maskEditorImageId,
   }
   if (state.appMode === 'gallery') {
+    const conversationId = getActiveWorkspaceConversationId('image')
     return {
       ...patch,
       galleryInputDraft: isEmptyAgentInputDraft(draft) ? null : copyAgentInputDraft(draft),
+      ...(conversationId ? { galleryConversationDrafts: setAgentInputDraft(state.galleryConversationDrafts, conversationId, draft) } : {}),
     }
   }
   if (!state.activeAgentConversationId) return patch
@@ -1170,6 +1187,18 @@ function getPersistableAgentInputDrafts(state: AppState) {
   const persistable: Record<string, AgentInputDraft> = {}
   for (const [conversationId, draft] of Object.entries(drafts)) {
     if (!conversationIds.has(conversationId) || isEmptyAgentInputDraft(draft)) continue
+    persistable[conversationId] = {
+      ...copyAgentInputDraft(draft),
+      inputImages: draft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })),
+    }
+  }
+  return persistable
+}
+
+function getPersistableGalleryConversationDrafts(state: AppState) {
+  const persistable: Record<string, AgentInputDraft> = {}
+  for (const [conversationId, draft] of Object.entries(state.galleryConversationDrafts)) {
+    if (isEmptyAgentInputDraft(draft)) continue
     persistable[conversationId] = {
       ...copyAgentInputDraft(draft),
       inputImages: draft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })),
@@ -1401,6 +1430,38 @@ export const useStore = create<AppState>()(
         set((s) => syncActiveInputDraft(s, { maskEditorImageId }))
       },
       galleryInputDraft: null,
+      galleryConversationDrafts: {},
+      switchGalleryConversation: (previousId, nextId) => set((state) => {
+        const currentDraft = getCurrentAgentInputDraft(state)
+        const galleryConversationDrafts = previousId
+          ? setAgentInputDraft(state.galleryConversationDrafts, previousId, currentDraft)
+          : state.galleryConversationDrafts
+        const nextDraft = galleryConversationDrafts[nextId] ?? (previousId ? null : state.galleryInputDraft)
+        return {
+          galleryConversationDrafts,
+          galleryInputDraft: nextDraft && !isEmptyAgentInputDraft(nextDraft) ? copyAgentInputDraft(nextDraft) : null,
+          ...restoreGalleryInputDraftState(nextDraft ?? null),
+          selectedTaskIds: [],
+          detailTaskId: null,
+          lightboxImageId: null,
+          lightboxImageList: [],
+        }
+      }),
+      deleteGalleryConversationDraft: (id, nextId) => set((state) => {
+        const galleryConversationDrafts = { ...state.galleryConversationDrafts }
+        delete galleryConversationDrafts[id]
+        if (!nextId) return { galleryConversationDrafts }
+        const nextDraft = galleryConversationDrafts[nextId] ?? null
+        return {
+          galleryConversationDrafts,
+          galleryInputDraft: nextDraft,
+          ...restoreGalleryInputDraftState(nextDraft),
+          selectedTaskIds: [],
+          detailTaskId: null,
+          lightboxImageId: null,
+          lightboxImageList: [],
+        }
+      }),
 
       // Params
       params: { ...DEFAULT_PARAMS },
@@ -1654,7 +1715,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gpt-image-playground',
-      version: 3,
+      version: 4,
       migrate: (persistedState) => migratePersistedState(persistedState),
       partialize: getPersistedState,
       merge: mergePersistedState,
@@ -2490,7 +2551,13 @@ export async function initStore() {
   startPersistentProxyRecoveryScanner()
   const legacyAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)
   const storedTasks = await getAllTasks()
-  useStore.getState().setTasks(storedTasks.map(getPersistableTask))
+  const imageConversationId = ensureWorkspaceConversation('image', storedTasks.length ? '历史图片' : '新对话')
+  const normalizedStoredTasks = storedTasks.map((task) => task.workspaceConversationId ? task : { ...task, workspaceConversationId: imageConversationId })
+  if (normalizedStoredTasks.some((task, index) => task !== storedTasks[index])) {
+    await Promise.all(normalizedStoredTasks.filter((task, index) => task !== storedTasks[index]).map((task) => putTask(task)))
+  }
+  useStore.getState().switchGalleryConversation(null, imageConversationId)
+  useStore.getState().setTasks(normalizedStoredTasks.map(getPersistableTask))
   addJobLog('info', 'store:init', '已从本地数据库加载任务', { taskCount: storedTasks.length })
   const storedAgentConversations = normalizeAgentConversations(await getAllAgentConversations())
   let loadedAgentConversations = mergeAgentConversationsForStorage(storedAgentConversations, legacyAgentConversations)
@@ -2526,8 +2593,8 @@ export async function initStore() {
   if (shouldRewritePersistedLocalState) {
     useStore.setState({})
   }
-  const resumablePersistentTaskIds = await getResumablePersistentProxyTaskIds(storedTasks)
-  const { tasks: markedTasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks, Date.now(), resumablePersistentTaskIds)
+  const resumablePersistentTaskIds = await getResumablePersistentProxyTaskIds(normalizedStoredTasks)
+  const { tasks: markedTasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(normalizedStoredTasks, Date.now(), resumablePersistentTaskIds)
   const interruptedTaskIds = new Set(interruptedTasks.map((task) => task.id))
   const favoriteState = useStore.getState()
   const normalizedFavorites = normalizeLoadedFavoriteState(markedTasks.map(getPersistableTask), favoriteState.favoriteCollections, favoriteState.defaultFavoriteCollectionId)
@@ -2542,6 +2609,18 @@ export async function initStore() {
     .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload)
     .map((task) => putTask(task)))
   useStore.getState().setTasks(tasks)
+  const conversationStats: Record<string, { taskCount: number; updatedAt: number }> = {}
+  for (const task of tasks) {
+    if (!task.workspaceConversationId) continue
+    const current = conversationStats[task.workspaceConversationId]
+    conversationStats[task.workspaceConversationId] = {
+      taskCount: (current?.taskCount ?? 0) + 1,
+      updatedAt: Math.max(current?.updatedAt ?? 0, task.finishedAt ?? task.createdAt),
+    }
+  }
+  syncWorkspaceConversationStats('image', conversationStats)
+  const latestMigratedTask = tasks.filter((task) => task.workspaceConversationId === imageConversationId).sort((a, b) => b.createdAt - a.createdAt)[0]
+  if (latestMigratedTask) touchWorkspaceConversation(imageConversationId, latestMigratedTask.prompt)
   showSupportPromptForExistingLocalData(tasks)
   for (const task of tasks) {
     if (resumablePersistentTaskIds.has(task.id)) {
@@ -2568,11 +2647,15 @@ export async function initStore() {
   const state = useStore.getState()
   const persistedInputImages = state.inputImages
   const galleryInputDraft = state.galleryInputDraft
+  const galleryConversationDrafts = state.galleryConversationDrafts
   const agentConversations = state.agentConversations
   const agentInputDrafts = state.agentInputDrafts
   for (const img of persistedInputImages) referencedIds.add(img.id)
   if (galleryInputDraft) {
     for (const img of galleryInputDraft.inputImages) referencedIds.add(img.id)
+  }
+  for (const draft of Object.values(galleryConversationDrafts)) {
+    for (const img of draft.inputImages) referencedIds.add(img.id)
   }
   for (const draft of Object.values(agentInputDrafts)) {
     for (const img of draft.inputImages) referencedIds.add(img.id)
@@ -2650,6 +2733,46 @@ export async function initStore() {
           : {}),
       })
     }
+  }
+
+  const restoredGalleryConversationDrafts: Record<string, AgentInputDraft> = {}
+  let galleryConversationDraftsChanged = false
+  for (const [conversationId, draft] of Object.entries(galleryConversationDrafts)) {
+    const restoredDraftImages: InputImage[] = []
+    for (const img of draft.inputImages) {
+      if (img.dataUrl) {
+        restoredDraftImages.push(img)
+        cacheImage(img.id, img.dataUrl)
+        continue
+      }
+      const storedImage = await getImage(img.id)
+      if (storedImage?.dataUrl) {
+        restoredDraftImages.push({ ...img, dataUrl: storedImage.dataUrl })
+        cacheImage(img.id, storedImage.dataUrl)
+      }
+    }
+    const shouldClearMask = Boolean(draft.maskDraft) && !restoredDraftImages.some((img) => img.id === draft.maskDraft?.targetImageId)
+    const restoredDraft: AgentInputDraft = {
+      ...draft,
+      inputImages: restoredDraftImages,
+      prompt: remapImageMentionsForOrder(draft.prompt, draft.inputImages, restoredDraftImages),
+      ...(shouldClearMask ? { maskDraft: null, maskEditorImageId: null } : {}),
+    }
+    if (!isEmptyAgentInputDraft(restoredDraft)) restoredGalleryConversationDrafts[conversationId] = restoredDraft
+    if (
+      restoredDraftImages.length !== draft.inputImages.length ||
+      restoredDraftImages.some((img, index) => img.dataUrl !== draft.inputImages[index]?.dataUrl) ||
+      shouldClearMask
+    ) galleryConversationDraftsChanged = true
+  }
+  if (galleryConversationDraftsChanged) {
+    const activeConversationId = getActiveWorkspaceConversationId('image')
+    const activeDraft = activeConversationId ? restoredGalleryConversationDrafts[activeConversationId] ?? null : null
+    useStore.setState({
+      galleryConversationDrafts: restoredGalleryConversationDrafts,
+      galleryInputDraft: activeDraft,
+      ...(useStore.getState().appMode === 'gallery' ? restoreGalleryInputDraftState(activeDraft) : {}),
+    })
   }
 
   const restoredAgentInputDrafts: Record<string, AgentInputDraft> = {}
@@ -2792,8 +2915,10 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   const taskId = genId()
+  const workspaceConversationId = ensureWorkspaceConversation('image')
   const task: TaskRecord = {
     id: taskId,
+    workspaceConversationId,
     prompt: prompt.trim(),
     params: taskParams,
     apiProvider: activeProfile.provider,
@@ -2817,6 +2942,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   const latestTasks = useStore.getState().tasks
   useStore.getState().setTasks([task, ...latestTasks])
   await putTask(task)
+  touchWorkspaceConversation(workspaceConversationId, task.prompt)
   useStore.getState().showToast('任务已提交', 'success')
 
   if (settings.clearInputAfterSubmit) {
@@ -3210,6 +3336,10 @@ function addInputDraftReferencedImageIds(target: Set<string>, draft: AgentInputD
   for (const img of draft.inputImages) target.add(img.id)
 }
 
+function addGalleryConversationDraftReferencedImageIds(target: Set<string>, drafts = useStore.getState().galleryConversationDrafts) {
+  for (const draft of Object.values(drafts)) addInputDraftReferencedImageIds(target, draft)
+}
+
 function addTaskReferencedImageIds(target: Set<string>, task: TaskRecord) {
   for (const id of task.inputImageIds || []) target.add(id)
   if (task.maskImageId) target.add(task.maskImageId)
@@ -3335,11 +3465,12 @@ async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
   const candidates = Array.from(new Set(Array.from(imageIds).filter(Boolean)))
   if (candidates.length === 0) return
 
-  const { tasks, inputImages, galleryInputDraft } = useStore.getState()
+  const { tasks, inputImages, galleryInputDraft, galleryConversationDrafts } = useStore.getState()
   const stillUsed = new Set<string>()
   for (const task of tasks) addTaskReferencedImageIds(stillUsed, task)
   addAgentReferencedImageIds(stillUsed)
   addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
+  addGalleryConversationDraftReferencedImageIds(stillUsed, galleryConversationDrafts)
   for (const img of inputImages) stillUsed.add(img.id)
 
   for (const imgId of candidates) {
@@ -4280,6 +4411,7 @@ async function executeAgentRound(
 
       const task: TaskRecord = {
         id: genId(),
+        workspaceConversationId: ensureWorkspaceConversation('image'),
         prompt: taskPrompt,
         params: options.taskParams ?? { ...params, n: 1 },
         apiProvider: imageProfile.provider,
@@ -4843,6 +4975,7 @@ async function executeAgentRound(
         }
         const task: TaskRecord = {
           id: genId(),
+          workspaceConversationId: ensureWorkspaceConversation('image'),
           prompt: image.revisedPrompt ?? round?.prompt ?? userMessage.content,
           params,
           apiProvider: imageProfile.provider,
@@ -5540,6 +5673,7 @@ export async function retryTask(task: TaskRecord) {
   const taskId = genId()
   const newTask: TaskRecord = {
     id: taskId,
+    workspaceConversationId: task.workspaceConversationId ?? ensureWorkspaceConversation('image'),
     prompt: task.prompt,
     params: taskParams,
     apiProvider: activeProfile.provider,
@@ -5563,6 +5697,7 @@ export async function retryTask(task: TaskRecord) {
   const latestTasks = useStore.getState().tasks
   useStore.getState().setTasks([newTask, ...latestTasks])
   await putTask(newTask)
+  if (newTask.workspaceConversationId) touchWorkspaceConversation(newTask.workspaceConversationId, newTask.prompt)
 
   startPersistentProxyRecoveryScanner()
   schedulePersistentProxyRecovery(taskId)
@@ -5653,7 +5788,7 @@ export async function editOutputs(task: TaskRecord) {
 
 /** 删除多条任务 */
 export async function removeMultipleTasks(taskIds: string[]) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast, selectedTaskIds } = useStore.getState()
+  const { tasks, setTasks, inputImages, galleryInputDraft, galleryConversationDrafts, showToast, selectedTaskIds } = useStore.getState()
   
   if (!taskIds.length) return
 
@@ -5681,6 +5816,7 @@ export async function removeMultipleTasks(taskIds: string[]) {
   }
   addAgentReferencedImageIds(stillUsed)
   addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
+  addGalleryConversationDraftReferencedImageIds(stillUsed, galleryConversationDrafts)
   for (const img of inputImages) stillUsed.add(img.id)
 
   // 删除孤立图片
@@ -5729,7 +5865,7 @@ export async function clearFailedTasks(taskIds?: string[]) {
 
 /** 删除单条任务 */
 export async function removeTask(task: TaskRecord) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast } = useStore.getState()
+  const { tasks, setTasks, inputImages, galleryInputDraft, galleryConversationDrafts, showToast } = useStore.getState()
 
   // 收集此任务关联的图片
   const taskImageIds = new Set([
@@ -5752,6 +5888,7 @@ export async function removeTask(task: TaskRecord) {
   }
   addAgentReferencedImageIds(stillUsed)
   addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
+  addGalleryConversationDraftReferencedImageIds(stillUsed, galleryConversationDrafts)
   for (const img of inputImages) stillUsed.add(img.id)
 
   // 删除孤立图片
@@ -5787,11 +5924,19 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
     useStore.setState({
       agentConversations: [],
       activeAgentConversationId: null,
+      galleryInputDraft: null,
+      galleryConversationDrafts: {},
       supportPromptOpen: false,
       supportPromptSkippedForImportedData: false,
     })
     clearInputImages()
     clearMaskDraft()
+    clearVideoWorkspaceData()
+    clearWorkspaceConversations()
+    const imageConversationId = createWorkspaceConversation('image')
+    createWorkspaceConversation('video')
+    useStore.getState().switchGalleryConversation(null, imageConversationId)
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('workspace-video-conversation-deleted', { detail: '__all__' }))
   }
 
   if (options.clearConfig) {
@@ -5902,6 +6047,7 @@ export async function exportData(options: ExportOptions = { exportConfig: true, 
       thumbnailsByImageId,
       favoriteCollections,
       defaultFavoriteCollectionId,
+      workspaceConversations: getWorkspaceConversationState().conversations.filter((conversation) => conversation.kind === 'image'),
       agentConversations: getPersistableAgentConversations(agentConversations),
     })
     const blob = new Blob([zipped.buffer as ArrayBuffer], { type: 'application/zip' })
@@ -5970,8 +6116,16 @@ export async function importData(file: File, options: ImportOptions = { importCo
         })
       }
 
+      importWorkspaceConversations(data.workspaceConversations)
+      const validConversationIds = new Set(getWorkspaceConversationState().conversations.filter((conversation) => conversation.kind === 'image').map((conversation) => conversation.id))
+      let fallbackConversationId: string | null = null
       for (const task of data.tasks) {
-        await putTask(task)
+        if (task.workspaceConversationId && validConversationIds.has(task.workspaceConversationId)) {
+          await putTask(task)
+          continue
+        }
+        fallbackConversationId ??= createWorkspaceConversation('image', '导入图片', !getActiveWorkspaceConversationId('image'))
+        await putTask({ ...task, workspaceConversationId: fallbackConversationId })
       }
 
       const tasks = await getAllTasks()

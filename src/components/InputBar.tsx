@@ -10,6 +10,7 @@ import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
 import { useHintTooltip } from '../hooks/useHintTooltip'
+import { useWorkspaceConversations } from '../hooks/useWorkspaceConversations'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageSources, getTaskOutputImageZipEntries } from '../lib/downloadImages'
 import SizePickerModal from './SizePickerModal'
 import { CloseIcon } from './icons'
@@ -385,6 +386,9 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
 }
 
 export default function InputBar() {
+  const workspaceConversationState = useWorkspaceConversations()
+  const workspaceSidebarCollapsed = workspaceConversationState.sidebarCollapsed
+  const activeWorkspaceConversationId = workspaceConversationState.activeIds.image
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
   const setPrompt = useStore((s) => s.setPrompt)
@@ -423,6 +427,7 @@ export default function InputBar() {
     const q = searchQuery.trim().toLowerCase()
     
     return sorted.filter((t) => {
+      if (!filterFavorite && t.workspaceConversationId !== activeWorkspaceConversationId) return false
       if (filterFavorite) {
         if (!t.isFavorite) return false
         if (activeFavoriteCollectionId && activeFavoriteCollectionId !== ALL_FAVORITES_COLLECTION_ID && !getTaskFavoriteCollectionIds(t).includes(activeFavoriteCollectionId)) return false
@@ -430,7 +435,7 @@ export default function InputBar() {
       if (!taskMatchesFilterStatus(t, filterStatus)) return false
       return taskMatchesSearchQuery(t, q)
     })
-  }, [tasks, searchQuery, filterStatus, filterFavorite, activeFavoriteCollectionId])
+  }, [activeFavoriteCollectionId, activeWorkspaceConversationId, filterFavorite, filterStatus, searchQuery, tasks])
 
   const inCollectionOverview = filterFavorite && !activeFavoriteCollectionId
 
@@ -1942,7 +1947,7 @@ export default function InputBar() {
         />
       )}
 
-      <div data-input-bar className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-4xl px-3 sm:px-4 transition-all duration-300">
+      <div data-input-bar className={`fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-4xl px-3 sm:px-4 transition-all duration-300 ${workspaceSidebarCollapsed ? 'lg:left-[calc(50%+1.75rem)] lg:w-[calc(100%-3.5rem)]' : 'lg:left-[calc(50%+9rem)] lg:w-[calc(100%-18rem)]'}`}>
         <InputBatchBars
           showFavoriteCollectionBatchBar={showFavoriteCollectionBatchBar}
           showTaskBatchBar={showTaskBatchBar}

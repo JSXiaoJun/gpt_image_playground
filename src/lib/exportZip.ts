@@ -1,6 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 
-import type { AgentConversation, AppSettings, ExportData, FavoriteCollection, StoredImage, StoredImageThumbnail, TaskRecord } from '../types'
+import type { AgentConversation, AppSettings, ExportData, FavoriteCollection, StoredImage, StoredImageThumbnail, TaskRecord, WorkspaceConversation } from '../types'
 import { bytesToDataUrl, dataUrlToBytes } from './dataUrl'
 import { getNumberedFileNameBase, sanitizeFileNamePart } from './exportFileName'
 
@@ -20,6 +20,7 @@ export interface BuildExportZipParams {
   thumbnailsByImageId: Map<string, StoredImageThumbnail>
   favoriteCollections: FavoriteCollection[]
   defaultFavoriteCollectionId: string | null
+  workspaceConversations?: WorkspaceConversation[]
   agentConversations: AgentConversation[]
 }
 
@@ -79,6 +80,7 @@ export function buildExportZip(params: BuildExportZipParams) {
     manifest.tasks = params.tasks
     manifest.favoriteCollections = params.favoriteCollections
     manifest.defaultFavoriteCollectionId = params.defaultFavoriteCollectionId
+    manifest.workspaceConversations = params.workspaceConversations ?? []
     manifest.agentConversations = params.agentConversations
     manifest.imageFiles = imageFiles
     manifest.thumbnailFiles = thumbnailFiles

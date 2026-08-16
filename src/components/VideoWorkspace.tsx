@@ -12,12 +12,16 @@ import {
 } from '../lib/videoApi'
 import { getAudioDuration, getVideoDuration } from '../lib/videoDuration'
 import { uploadR2Asset } from '../lib/r2AssetUpload'
+import { ensureWorkspaceConversation, syncWorkspaceConversationStats, touchWorkspaceConversation } from '../lib/workspaceConversations'
+import { readVideoConversationDrafts, VIDEO_TASKS_KEY as TASKS_KEY, writeVideoConversationDraft, type VideoConversationDraft } from '../lib/videoWorkspaceStorage'
+import { useWorkspaceConversations } from '../hooks/useWorkspaceConversations'
 import { ArrowDownIcon, DownloadIcon, PlusIcon, RefreshIcon, SettingsIcon, TrashIcon } from './icons'
 
 type VideoTaskStatus = 'submitting' | 'queued' | 'processing' | 'completed' | 'failed'
 
 interface VideoTaskRecord {
   id: string
+  workspaceConversationId: string
   publicTaskId?: string
   videoUrl?: string
   prompt: string
@@ -47,7 +51,6 @@ interface VideoConfig {
 }
 
 const CONFIG_KEY = 'gpt-image-playground-video-config-v1'
-const TASKS_KEY = 'gpt-image-playground-video-tasks-v1'
 const CATALOG_KEY = 'gpt-image-playground-video-catalog-v1'
 const VIDEO_API_BASE_URL = 'https://video-admin.yyapi.cloud/new-api'
 const VIDEO_CAPABILITIES_BASE_URL = 'https://video-admin.yyapi.cloud'
@@ -106,7 +109,7 @@ function readConfig(): VideoConfig {
 function readTasks() {
   const value = readJson(TASKS_KEY)
   if (!Array.isArray(value)) return []
-  return value.filter((task): task is VideoTaskRecord => Boolean(
+  const tasks = value.filter((task): task is VideoTaskRecord => Boolean(
     task &&
     typeof task === 'object' &&
     typeof task.id === 'string' &&
@@ -115,6 +118,8 @@ function readTasks() {
     typeof task.status === 'string' &&
     typeof task.createdAt === 'number',
   ))
+  const conversationId = ensureWorkspaceConversation('video', tasks.length ? '历史视频' : '新对话')
+  return tasks.map((task) => typeof task.workspaceConversationId === 'string' ? task : { ...task, workspaceConversationId: conversationId })
 }
 
 function readCatalog() {
@@ -160,6 +165,8 @@ function isPublicUrl(value: string) {
 }
 
 export default function VideoWorkspace() {
+  const workspaceState = useWorkspaceConversations()
+  const activeConversationId = workspaceState.activeIds.video
   const cachedCatalog = useMemo(readCatalog, [])
   const [config, setConfig] = useState<VideoConfig>(readConfig)
   const [tasks, setTasks] = useState<VideoTaskRecord[]>(readTasks)
@@ -168,10 +175,11 @@ export default function VideoWorkspace() {
     ...FALLBACK_MODEL_CAPABILITIES,
     ...cachedCatalog?.capabilities,
   })
-  const [prompt, setPrompt] = useState('')
-  const [imageUrlText, setImageUrlText] = useState('')
-  const [referenceVideo, setReferenceVideo] = useState('')
-  const [audioUrlText, setAudioUrlText] = useState('')
+  const initialDraft = useMemo(() => activeConversationId ? readVideoConversationDrafts()[activeConversationId] : null, [])
+  const [prompt, setPrompt] = useState(initialDraft?.prompt ?? '')
+  const [imageUrlText, setImageUrlText] = useState(initialDraft?.imageUrlText ?? '')
+  const [referenceVideo, setReferenceVideo] = useState(initialDraft?.referenceVideo ?? '')
+  const [audioUrlText, setAudioUrlText] = useState(initialDraft?.audioUrlText ?? '')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | 'running' | 'completed' | 'failed'>('all')
   const [showConfig, setShowConfig] = useState(false)
@@ -187,6 +195,10 @@ export default function VideoWorkspace() {
   const pollingRef = useRef(new Set<string>())
   const previewFallbackRef = useRef(new Set<string>())
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const activeConversationRef = useRef(activeConversationId)
+  const deletedConversationIdsRef = useRef(new Set<string>())
+  const draftRef = useRef<VideoConversationDraft>({ prompt, imageUrlText, referenceVideo, audioUrlText })
+  const skipDraftPersistRef = useRef(false)
   const videoPreviewRef = useRef<{ taskId: string; url: string } | null>(null)
   const tasksRef = useRef<VideoTaskRecord[]>(tasks)
 
@@ -195,6 +207,36 @@ export default function VideoWorkspace() {
   const audioUrls = audioUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
   const referenceCount = imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0)
   const referenceLimit = capabilities.maxReferences ?? capabilities.maxImages + (capabilities.referenceVideo ? 1 : 0) + (capabilities.maxAudios ?? 0)
+
+  useEffect(() => {
+    if (!activeConversationId || activeConversationRef.current === activeConversationId) return
+    if (activeConversationRef.current && !deletedConversationIdsRef.current.has(activeConversationRef.current)) {
+      writeVideoConversationDraft(activeConversationRef.current, draftRef.current)
+    }
+    if (activeConversationRef.current) deletedConversationIdsRef.current.delete(activeConversationRef.current)
+    const draft = readVideoConversationDrafts()[activeConversationId]
+    skipDraftPersistRef.current = true
+    setPrompt(draft?.prompt ?? '')
+    setImageUrlText(draft?.imageUrlText ?? '')
+    setReferenceVideo(draft?.referenceVideo ?? '')
+    setAudioUrlText(draft?.audioUrlText ?? '')
+    setShowAssets(false)
+    setShowConfig(false)
+    if (videoPreviewRef.current?.url.startsWith('blob:')) URL.revokeObjectURL(videoPreviewRef.current.url)
+    videoPreviewRef.current = null
+    setVideoPreview(null)
+    activeConversationRef.current = activeConversationId
+  }, [activeConversationId])
+
+  useEffect(() => {
+    draftRef.current = { prompt, imageUrlText, referenceVideo, audioUrlText }
+    if (!activeConversationId) return
+    if (skipDraftPersistRef.current) {
+      skipDraftPersistRef.current = false
+      return
+    }
+    writeVideoConversationDraft(activeConversationId, draftRef.current)
+  }, [activeConversationId, audioUrlText, imageUrlText, prompt, referenceVideo])
 
   const uploadAssets = async (files: File[], kind: 'image' | 'video' | 'audio') => {
     if (!files.length) return
@@ -264,7 +306,31 @@ export default function VideoWorkspace() {
   useEffect(() => {
     localStorage.setItem(TASKS_KEY, JSON.stringify(tasks))
     tasksRef.current = tasks
+    const stats: Record<string, { taskCount: number; updatedAt: number }> = {}
+    for (const task of tasks) {
+      const current = stats[task.workspaceConversationId]
+      stats[task.workspaceConversationId] = {
+        taskCount: (current?.taskCount ?? 0) + 1,
+        updatedAt: Math.max(current?.updatedAt ?? 0, task.updatedAt),
+      }
+    }
+    syncWorkspaceConversationStats('video', stats)
   }, [tasks])
+
+  useEffect(() => {
+    const handleConversationDeleted = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail
+      if (id === '__all__') {
+        for (const task of tasksRef.current) deletedConversationIdsRef.current.add(task.workspaceConversationId)
+        setTasks([])
+        return
+      }
+      deletedConversationIdsRef.current.add(id)
+      setTasks((current) => current.filter((task) => task.workspaceConversationId !== id))
+    }
+    window.addEventListener('workspace-video-conversation-deleted', handleConversationDeleted)
+    return () => window.removeEventListener('workspace-video-conversation-deleted', handleConversationDeleted)
+  }, [])
 
   useEffect(() => {
     videoPreviewRef.current = videoPreview
@@ -497,10 +563,12 @@ export default function VideoWorkspace() {
     setSubmitting(true)
     setMessage(null)
     for (let idx = 0; idx < config.count; idx++) {
+      if (activeConversationId && deletedConversationIdsRef.current.has(activeConversationId)) break
       const now = Date.now()
       const localId = crypto.randomUUID()
       const draft: VideoTaskRecord = {
         id: localId,
+        workspaceConversationId: activeConversationId ?? ensureWorkspaceConversation('video'),
         prompt: prompt.trim(),
         model: config.model,
         aspectRatio: config.aspectRatio,
@@ -535,6 +603,7 @@ export default function VideoWorkspace() {
           progress: normalizeVideoProgress(result.task.progress),
           error: normalizeVideoTaskStatus(result.task.status) === 'failed' ? getVideoTaskError(result.task) : undefined,
         })
+        touchWorkspaceConversation(draft.workspaceConversationId, draft.prompt)
       } catch (err) {
         updateTask(localId, { status: 'failed', error: err instanceof Error ? err.message : '创建任务失败' })
       }
@@ -588,12 +657,13 @@ export default function VideoWorkspace() {
   }
 
   const filteredTasks = useMemo(() => tasks.filter((task) => {
+    if (task.workspaceConversationId !== activeConversationId) return false
     if (filter === 'running' && !['submitting', 'queued', 'processing'].includes(task.status)) return false
     if (filter === 'completed' && task.status !== 'completed') return false
     if (filter === 'failed' && task.status !== 'failed') return false
     const query = search.trim().toLowerCase()
     return !query || task.prompt.toLowerCase().includes(query) || task.model.toLowerCase().includes(query) || task.publicTaskId?.toLowerCase().includes(query)
-  }), [filter, search, tasks])
+  }), [activeConversationId, filter, search, tasks])
 
   return (
     <>
@@ -687,7 +757,7 @@ export default function VideoWorkspace() {
         </div>
       )}
 
-      <div data-no-drag-select className="safe-area-x fixed inset-x-0 bottom-0 z-30 pb-[calc(12px+env(safe-area-inset-bottom,0px))] sm:pb-[calc(16px+env(safe-area-inset-bottom,0px))]">
+      <div data-no-drag-select className={`safe-area-x fixed inset-x-0 bottom-0 z-30 pb-[calc(12px+env(safe-area-inset-bottom,0px))] transition-[left] duration-200 sm:pb-[calc(16px+env(safe-area-inset-bottom,0px))] ${workspaceState.sidebarCollapsed ? 'lg:left-14' : 'lg:left-72'}`}>
         <div className="mx-auto max-w-5xl overflow-hidden rounded-xl border border-gray-200 bg-white/95 p-2 shadow-[0_-8px_32px_rgba(0,0,0,0.08)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-gray-950/95 sm:p-3">
           {showConfig && (
             <div className="mb-2 grid gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04] sm:grid-cols-[1fr_1fr_auto]">

@@ -4,6 +4,7 @@ import { useTooltip } from '../hooks/useTooltip'
 import Select from './Select'
 import { ChevronLeftIcon, CollectionManageIcon, FavoriteIcon, TrashIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
+import { getActiveWorkspaceConversationId } from '../lib/workspaceConversations'
 
 function SearchActionButton({
   tooltip,
@@ -58,6 +59,7 @@ export default function SearchBar() {
   const failedCount = useStore((s) => {
     const q = s.searchQuery.trim().toLowerCase()
     return s.tasks.filter((task) => {
+      if (!s.filterFavorite && task.workspaceConversationId !== getActiveWorkspaceConversationId('image')) return false
       if (!taskMatchesFilterStatus(task, 'error')) return false
       if (s.filterFavorite) {
         if (!task.isFavorite) return false
@@ -101,6 +103,7 @@ export default function SearchBar() {
     const q = state.searchQuery.trim().toLowerCase()
     const failedTaskIds = state.tasks
       .filter((task) => {
+        if (!state.filterFavorite && task.workspaceConversationId !== getActiveWorkspaceConversationId('image')) return false
         if (!taskMatchesFilterStatus(task, 'error')) return false
         if (state.filterFavorite) {
           if (!task.isFavorite) return false

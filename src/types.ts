@@ -2,6 +2,17 @@
 
 export type ApiMode = 'images' | 'responses'
 export type AppMode = 'gallery' | 'agent'
+export type WorkspaceMode = 'image' | 'video'
+
+export interface WorkspaceConversation {
+  id: string
+  kind: WorkspaceMode
+  title: string
+  untitled: boolean
+  taskCount: number
+  createdAt: number
+  updatedAt: number
+}
 export type AgentApiConfigMode = 'off' | 'native' | 'hybrid'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
 export const ZIP_DOWNLOAD_ROUTE_VALUES = [
@@ -160,6 +171,8 @@ export type TaskStatus = 'running' | 'done' | 'error'
 
 export interface TaskRecord {
   id: string
+  /** 图片/视频工作台会话 ID */
+  workspaceConversationId?: string
   prompt: string
   params: TaskParams
   /** 生成时使用的 Provider 类型 */
@@ -428,6 +441,7 @@ export interface ExportData {
   tasks?: TaskRecord[]
   favoriteCollections?: FavoriteCollection[]
   defaultFavoriteCollectionId?: string | null
+  workspaceConversations?: WorkspaceConversation[]
   agentConversations?: AgentConversation[]
   /** imageId → 图片信息 */
   imageFiles?: Record<string, {

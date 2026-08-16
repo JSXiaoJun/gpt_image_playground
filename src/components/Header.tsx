@@ -8,8 +8,7 @@ import HistoryModal from './HistoryModal'
 import JobLogsModal from './JobLogsModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
 import { CodeIcon, EditIcon, HelpCircleIcon, HistoryIcon, ImageIcon, InstallIcon, SettingsIcon, VideoIcon } from './icons'
-
-export type WorkspaceMode = 'image' | 'video'
+import type { WorkspaceMode } from '../types'
 
 interface HeaderProps {
   workspaceMode: WorkspaceMode
