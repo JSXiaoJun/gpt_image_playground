@@ -1,23 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  createVideoTask,
+  downloadVideoContent,
+  fetchVideoCatalog,
+  fetchVideoTask,
+  getVideoContentUrl,
   getVideoTaskError,
   normalizeVideoProgress,
   normalizeVideoTaskStatus,
   type VideoModelCapabilities,
 } from '../lib/videoApi'
-import {
-  createProviderVideoTask,
-  downloadProviderVideoContent,
-  fetchProviderVideoTask,
-  fetchVideoProviderCatalog,
-  getBundledVideoCatalog,
-  getProviderVideoContentUrl,
-  getVideoProvider,
-  normalizeVideoProviderId,
-  VIDEO_PROVIDERS,
-  type VideoProviderId,
-} from '../lib/videoProviders'
-import { normalizeVideoConfig, type VideoConfig } from '../lib/videoWorkspaceConfig'
 import { getAudioDuration, getVideoDuration } from '../lib/videoDuration'
 import { uploadR2Asset } from '../lib/r2AssetUpload'
 import { DownloadIcon, RefreshIcon, SettingsIcon, TrashIcon } from './icons'
@@ -26,7 +18,6 @@ type VideoTaskStatus = 'submitting' | 'queued' | 'processing' | 'completed' | 'f
 
 interface VideoTaskRecord {
   id: string
-  provider?: VideoProviderId
   publicTaskId?: string
   videoUrl?: string
   prompt: string
@@ -37,11 +28,7 @@ interface VideoTaskRecord {
   generateAudio: boolean
   imageUrls: string[]
   referenceVideo: string
-  videoUrls?: string[]
   audioUrls?: string[]
-  autoFace?: boolean
-  firstFrameUrl?: string
-  lastFrameUrl?: string
   status: VideoTaskStatus
   progress: number
   error?: string
@@ -49,9 +36,30 @@ interface VideoTaskRecord {
   updatedAt: number
 }
 
+interface VideoConfig {
+  apiKey: string
+  model: string
+  aspectRatio: string
+  duration: number
+  resolution: string
+  generateAudio: boolean
+  count: number
+}
+
 const CONFIG_KEY = 'gpt-image-playground-video-config-v1'
 const TASKS_KEY = 'gpt-image-playground-video-tasks-v1'
 const CATALOG_KEY = 'gpt-image-playground-video-catalog-v1'
+const VIDEO_API_BASE_URL = 'https://video-admin.yyapi.cloud/new-api'
+const VIDEO_CAPABILITIES_BASE_URL = 'https://video-admin.yyapi.cloud'
+const DEFAULT_CONFIG: VideoConfig = {
+  apiKey: '',
+  model: '',
+  aspectRatio: '16:9',
+  duration: 8,
+  resolution: '720p',
+  generateAudio: true,
+  count: 1,
+}
 const DEFAULT_CAPABILITIES: VideoModelCapabilities = {
   ratios: ['16:9', '9:16'],
   durations: [4, 6, 8, 10],
@@ -81,7 +89,18 @@ function readJson(key: string): unknown {
 }
 
 function readConfig(): VideoConfig {
-  return normalizeVideoConfig(readJson(CONFIG_KEY))
+  const value = readJson(CONFIG_KEY)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return DEFAULT_CONFIG
+  const config = value as Partial<VideoConfig>
+  return {
+    apiKey: typeof config.apiKey === 'string' ? config.apiKey : '',
+    model: typeof config.model === 'string' ? config.model : '',
+    aspectRatio: typeof config.aspectRatio === 'string' ? config.aspectRatio : DEFAULT_CONFIG.aspectRatio,
+    duration: typeof config.duration === 'number' ? config.duration : DEFAULT_CONFIG.duration,
+    resolution: typeof config.resolution === 'string' ? config.resolution : DEFAULT_CONFIG.resolution,
+    generateAudio: true,
+    count: [1, 2, 3, 4].includes(config.count ?? 0) ? config.count! : 1,
+  }
 }
 
 function readTasks() {
@@ -144,24 +163,21 @@ export default function VideoWorkspace() {
   const cachedCatalog = useMemo(readCatalog, [])
   const [config, setConfig] = useState<VideoConfig>(readConfig)
   const [tasks, setTasks] = useState<VideoTaskRecord[]>(readTasks)
-  const [yyapiModels, setYyapiModels] = useState<string[]>(cachedCatalog?.models ?? [])
-  const [yyapiModelCapabilities, setYyapiModelCapabilities] = useState({
+  const [models, setModels] = useState<string[]>(cachedCatalog?.models ?? [])
+  const [modelCapabilities, setModelCapabilities] = useState({
     ...FALLBACK_MODEL_CAPABILITIES,
     ...cachedCatalog?.capabilities,
   })
   const [prompt, setPrompt] = useState('')
   const [imageUrlText, setImageUrlText] = useState('')
-  const [videoUrlText, setVideoUrlText] = useState('')
+  const [referenceVideo, setReferenceVideo] = useState('')
   const [audioUrlText, setAudioUrlText] = useState('')
-  const [assetMode, setAssetMode] = useState<'references' | 'frames'>('references')
-  const [firstFrameUrl, setFirstFrameUrl] = useState('')
-  const [lastFrameUrl, setLastFrameUrl] = useState('')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | 'running' | 'completed' | 'failed'>('all')
   const [showConfig, setShowConfig] = useState(false)
   const [loadingModels, setLoadingModels] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | 'audio' | 'firstFrame' | 'lastFrame' | null>(null)
+  const [uploadingAsset, setUploadingAsset] = useState<'image' | 'video' | 'audio' | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'error' | 'success' } | null>(null)
   const [videoPreview, setVideoPreview] = useState<{ taskId: string; url: string } | null>(null)
   const [loadingPreviewTaskId, setLoadingPreviewTaskId] = useState<string | null>(null)
@@ -170,15 +186,11 @@ export default function VideoWorkspace() {
   const videoPreviewRef = useRef<{ taskId: string; url: string } | null>(null)
   const tasksRef = useRef<VideoTaskRecord[]>(tasks)
 
-  const bundledCatalog = getBundledVideoCatalog(config.provider)
-  const models = bundledCatalog?.models ?? yyapiModels
-  const modelCapabilities = bundledCatalog?.capabilities ?? yyapiModelCapabilities
   const capabilities = modelCapabilities[config.model] ?? DEFAULT_CAPABILITIES
   const imageUrls = imageUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
-  const videoUrls = videoUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
   const audioUrls = audioUrlText.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean)
 
-  const uploadAssets = async (files: File[], kind: 'image' | 'video' | 'audio' | 'firstFrame' | 'lastFrame') => {
+  const uploadAssets = async (files: File[], kind: 'image' | 'video' | 'audio') => {
     if (!files.length) return
     if (kind === 'image' && imageUrls.length + files.length > capabilities.maxImages) {
       setMessage({ text: `当前还能上传 ${Math.max(0, capabilities.maxImages - imageUrls.length)} 张参考图`, type: 'error' })
@@ -188,15 +200,11 @@ export default function VideoWorkspace() {
       setMessage({ text: '当前模型不支持参考视频', type: 'error' })
       return
     }
-    if (kind === 'video' && videoUrls.length + files.length > (capabilities.maxVideos ?? 1)) {
-      setMessage({ text: `当前模型最多支持 ${capabilities.maxVideos ?? 1} 个参考视频`, type: 'error' })
-      return
-    }
     if (kind === 'audio' && (!capabilities.maxAudios || audioUrls.length + files.length > capabilities.maxAudios)) {
       setMessage({ text: capabilities.maxAudios ? `当前模型最多支持 ${capabilities.maxAudios} 个参考音频` : '当前模型不支持参考音频', type: 'error' })
       return
     }
-    if (['image', 'video', 'audio'].includes(kind) && capabilities.maxReferences && imageUrls.length + videoUrls.length + audioUrls.length + files.length > capabilities.maxReferences) {
+    if (capabilities.maxReferences && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) + files.length > capabilities.maxReferences) {
       setMessage({ text: `当前模型的图片、视频和音频合计不能超过 ${capabilities.maxReferences} 个`, type: 'error' })
       return
     }
@@ -204,20 +212,19 @@ export default function VideoWorkspace() {
     setMessage(null)
     setUploadingAsset(kind)
     try {
-      if (kind === 'video' && (capabilities.minReferenceVideoDuration !== undefined || capabilities.maxReferenceVideoDuration !== undefined)) {
-        const durations = await Promise.all(files.map((file) => getVideoDuration(file)))
+      if (kind === 'video') {
+        const duration = await getVideoDuration(files[0])
         const minDuration = capabilities.minReferenceVideoDuration ?? 0
-        const maxDuration = capabilities.maxReferenceVideoDuration ?? Number.POSITIVE_INFINITY
-        const invalidDuration = durations.find((duration) => duration > maxDuration || duration < minDuration)
-        if (invalidDuration !== undefined) {
-          setMessage({ text: `参考视频时长为 ${invalidDuration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
+        const maxDuration = capabilities.maxReferenceVideoDuration ?? 30
+        if (duration > maxDuration || duration < minDuration) {
+          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
           return
         }
       }
-      if (kind === 'audio' && (capabilities.minAudioDuration !== undefined || capabilities.maxAudioDuration !== undefined || capabilities.maxTotalAudioDuration !== undefined)) {
+      if (kind === 'audio') {
         const newDurations = await Promise.all(files.map((file) => getAudioDuration(file)))
-        const minDuration = capabilities.minAudioDuration ?? 0
-        const maxDuration = capabilities.maxAudioDuration ?? Number.POSITIVE_INFINITY
+        const minDuration = capabilities.minAudioDuration ?? 2
+        const maxDuration = capabilities.maxAudioDuration ?? 15
         const invalidDuration = newDurations.find((duration) => duration < minDuration || duration > maxDuration)
         if (invalidDuration !== undefined) {
           setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
@@ -225,7 +232,7 @@ export default function VideoWorkspace() {
         }
         const existingDurations = await Promise.all(audioUrls.map((url) => getAudioDuration(url)))
         const totalDuration = [...existingDurations, ...newDurations].reduce((sum, duration) => sum + duration, 0)
-        const maxTotalDuration = capabilities.maxTotalAudioDuration ?? Number.POSITIVE_INFINITY
+        const maxTotalDuration = capabilities.maxTotalAudioDuration ?? 15
         if (totalDuration > maxTotalDuration) {
           setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 ${maxTotalDuration} 秒`, type: 'error' })
           return
@@ -234,10 +241,8 @@ export default function VideoWorkspace() {
       for (const file of files) {
         const url = await uploadR2Asset(file)
         if (kind === 'image') setImageUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
-        else if (kind === 'video') setVideoUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
-        else if (kind === 'audio') setAudioUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
-        else if (kind === 'firstFrame') setFirstFrameUrl(url)
-        else setLastFrameUrl(url)
+        else if (kind === 'video') setReferenceVideo(url)
+        else setAudioUrlText((current) => [...current.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), url].join('\n'))
       }
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : '上传失败', type: 'error' })
@@ -282,12 +287,10 @@ export default function VideoWorkspace() {
     setMessage(null)
     let streaming = false
     try {
-      const provider = normalizeVideoProviderId(task.provider)
-      const apiKey = config.apiKeys[provider]
-      const savedPublicUrl = getProviderVideoContentUrl(provider, { video_url: task.videoUrl })
-      const latest = savedPublicUrl ? null : await fetchProviderVideoTask(provider, apiKey, task.publicTaskId)
-      const publicUrl = savedPublicUrl || (latest ? getProviderVideoContentUrl(provider, latest) : undefined)
-      const url = publicUrl || URL.createObjectURL((await downloadProviderVideoContent(provider, apiKey, task.publicTaskId)).blob)
+      const savedPublicUrl = getVideoContentUrl({ video_url: task.videoUrl })
+      const latest = savedPublicUrl ? null : await fetchVideoTask(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)
+      const publicUrl = savedPublicUrl || (latest ? getVideoContentUrl(latest) : undefined)
+      const url = publicUrl || URL.createObjectURL((await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)).blob)
       streaming = Boolean(publicUrl)
       if (publicUrl !== task.videoUrl) updateTask(task.id, { videoUrl: publicUrl })
       if (videoPreviewRef.current?.url.startsWith('blob:')) URL.revokeObjectURL(videoPreviewRef.current.url)
@@ -297,18 +300,17 @@ export default function VideoWorkspace() {
     } finally {
       if (!streaming) setLoadingPreviewTaskId(null)
     }
-  }, [config.apiKeys, loadingPreviewTaskId, updateTask])
+  }, [config.apiKey, loadingPreviewTaskId, updateTask])
 
   const pollTask = useCallback(async (task: VideoTaskRecord) => {
     if (!task.publicTaskId || pollingRef.current.has(task.id)) return
     pollingRef.current.add(task.id)
     try {
-      const provider = normalizeVideoProviderId(task.provider)
-      const result = await fetchProviderVideoTask(provider, config.apiKeys[provider], task.publicTaskId)
+      const result = await fetchVideoTask(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)
       const status = normalizeVideoTaskStatus(result.status)
       const progress = normalizeVideoProgress(result.progress, task.progress)
       if (status === 'completed') {
-        const completed = { ...task, status: 'completed' as const, progress: 100, videoUrl: getProviderVideoContentUrl(provider, result) || task.videoUrl, updatedAt: Date.now() }
+        const completed = { ...task, status: 'completed' as const, progress: 100, videoUrl: getVideoContentUrl(result) || task.videoUrl, updatedAt: Date.now() }
         updateTask(task.id, completed)
       } else if (status === 'failed') {
         updateTask(task.id, { status: 'failed', progress, error: getVideoTaskError(result) })
@@ -320,7 +322,7 @@ export default function VideoWorkspace() {
     } finally {
       pollingRef.current.delete(task.id)
     }
-  }, [config.apiKeys, updateTask])
+  }, [config.apiKey, updateTask])
 
   useEffect(() => {
     const recover = () => {
@@ -336,18 +338,20 @@ export default function VideoWorkspace() {
   const loadModels = useCallback(async () => {
     setLoadingModels(true)
     try {
-      const catalog = await fetchVideoProviderCatalog(config.provider)
-      const ids = catalog.models
+      const { models: ids, capabilities: remoteCapabilities } = await fetchVideoCatalog(VIDEO_CAPABILITIES_BASE_URL)
       if (!ids.length) throw new Error('中间件没有返回可用模型')
-      if (config.provider === 'yyapi') {
-        localStorage.setItem(CATALOG_KEY, JSON.stringify({
-          models: ids,
-          capabilities: catalog.capabilities,
-          updatedAt: Date.now(),
-        }))
-        setYyapiModels(ids)
-        setYyapiModelCapabilities({ ...FALLBACK_MODEL_CAPABILITIES, ...catalog.capabilities })
+      const capabilitiesByModel = Object.fromEntries(remoteCapabilities.map((item) => [item.id, item.capabilities]))
+      const mergedCapabilities = {
+        ...FALLBACK_MODEL_CAPABILITIES,
+        ...capabilitiesByModel,
       }
+      localStorage.setItem(CATALOG_KEY, JSON.stringify({
+        models: ids,
+        capabilities: capabilitiesByModel,
+        updatedAt: Date.now(),
+      }))
+      setModels(ids)
+      setModelCapabilities(mergedCapabilities)
       if (!ids.includes(config.model)) setConfig((current) => ({ ...current, model: ids[0] }))
       setMessage({ text: `已同步 ${ids.length} 个模型`, type: 'success' })
     } catch (err) {
@@ -355,33 +359,22 @@ export default function VideoWorkspace() {
     } finally {
       setLoadingModels(false)
     }
-  }, [config.model, config.provider])
-
-  useEffect(() => {
-    if (!models.includes(config.model)) setConfig((current) => ({ ...current, model: models[0] ?? '' }))
-  }, [config.model, models])
+  }, [config.model])
 
   useEffect(() => {
     const next = modelCapabilities[config.model] ?? DEFAULT_CAPABILITIES
-    if (!next.referenceVideo) setVideoUrlText('')
+    if (!next.referenceVideo) setReferenceVideo('')
     if (!next.maxAudios) setAudioUrlText('')
-    if (!next.firstLastFrame) {
-      setAssetMode('references')
-      setFirstFrameUrl('')
-      setLastFrameUrl('')
-    }
     setConfig((current) => ({
       ...current,
       aspectRatio: next.ratios.includes(current.aspectRatio) ? current.aspectRatio : next.ratios[0],
       duration: next.durations.includes(current.duration) ? current.duration : next.durations[0],
       resolution: next.resolutions.includes(current.resolution) ? current.resolution : next.resolutions[0],
-      autoFace: next.autoFace ? current.autoFace : false,
     }))
   }, [config.model, modelCapabilities])
 
   const submit = async () => {
-    const apiKey = config.apiKeys[config.provider].trim()
-    if (!apiKey) {
+    if (!config.apiKey.trim()) {
       setShowConfig(true)
       setMessage({ text: '请先填写视频接口 API Key', type: 'error' })
       return
@@ -398,41 +391,31 @@ export default function VideoWorkspace() {
       setMessage({ text: '提示词中不要填写时长、时间码或画面比例，请使用下方参数', type: 'error' })
       return
     }
-    if (assetMode === 'frames' && (!firstFrameUrl || !lastFrameUrl)) {
-      setMessage({ text: '首尾帧模式需要同时上传首帧和尾帧图片', type: 'error' })
-      return
-    }
-    const submittedUrls = assetMode === 'frames' ? [firstFrameUrl, lastFrameUrl] : [...imageUrls, ...videoUrls, ...audioUrls]
-    if (submittedUrls.some((url) => !isPublicUrl(url))) {
+    if (imageUrls.some((url) => !isPublicUrl(url)) || audioUrls.some((url) => !isPublicUrl(url)) || (referenceVideo && !isPublicUrl(referenceVideo))) {
       setMessage({ text: '参考素材必须是可公开访问的 HTTP/HTTPS URL', type: 'error' })
       return
     }
-    if (assetMode === 'references' && imageUrls.length > capabilities.maxImages) {
+    if (imageUrls.length > capabilities.maxImages) {
       setMessage({ text: `当前模型最多支持 ${capabilities.maxImages} 张参考图`, type: 'error' })
       return
     }
-    if (assetMode === 'references' && audioUrls.length > (capabilities.maxAudios ?? 0)) {
+    if (audioUrls.length > (capabilities.maxAudios ?? 0)) {
       setMessage({ text: `当前模型最多支持 ${capabilities.maxAudios ?? 0} 个参考音频`, type: 'error' })
       return
     }
-    if (assetMode === 'references' && videoUrls.length > (capabilities.maxVideos ?? (capabilities.referenceVideo ? 1 : 0))) {
-      setMessage({ text: `当前模型最多支持 ${capabilities.maxVideos ?? (capabilities.referenceVideo ? 1 : 0)} 个参考视频`, type: 'error' })
-      return
-    }
-    if (assetMode === 'references' && capabilities.maxReferences && imageUrls.length + videoUrls.length + audioUrls.length > capabilities.maxReferences) {
+    if (capabilities.maxReferences && imageUrls.length + audioUrls.length + (referenceVideo ? 1 : 0) > capabilities.maxReferences) {
       setMessage({ text: `当前模型的图片、视频和音频合计不能超过 ${capabilities.maxReferences} 个`, type: 'error' })
       return
     }
 
-    if (assetMode === 'references' && videoUrls.length && (capabilities.minReferenceVideoDuration !== undefined || capabilities.maxReferenceVideoDuration !== undefined)) {
+    if (referenceVideo) {
       setSubmitting(true)
       try {
-        const durations = await Promise.all(videoUrls.map((url) => getVideoDuration(url)))
+        const duration = await getVideoDuration(referenceVideo)
         const minDuration = capabilities.minReferenceVideoDuration ?? 0
-        const maxDuration = capabilities.maxReferenceVideoDuration ?? Number.POSITIVE_INFINITY
-        const invalidDuration = durations.find((duration) => duration > maxDuration || duration < minDuration)
-        if (invalidDuration !== undefined) {
-          setMessage({ text: `参考视频时长为 ${invalidDuration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
+        const maxDuration = capabilities.maxReferenceVideoDuration ?? 30
+        if (duration > maxDuration || duration < minDuration) {
+          setMessage({ text: `参考视频时长为 ${duration.toFixed(1)} 秒，必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
           setSubmitting(false)
           return
         }
@@ -443,12 +426,12 @@ export default function VideoWorkspace() {
       }
     }
 
-    if (assetMode === 'references' && audioUrls.length && (capabilities.minAudioDuration !== undefined || capabilities.maxAudioDuration !== undefined || capabilities.maxTotalAudioDuration !== undefined)) {
+    if (audioUrls.length) {
       setSubmitting(true)
       try {
         const durations = await Promise.all(audioUrls.map((url) => getAudioDuration(url)))
-        const minDuration = capabilities.minAudioDuration ?? 0
-        const maxDuration = capabilities.maxAudioDuration ?? Number.POSITIVE_INFINITY
+        const minDuration = capabilities.minAudioDuration ?? 2
+        const maxDuration = capabilities.maxAudioDuration ?? 15
         const invalidDuration = durations.find((duration) => duration < minDuration || duration > maxDuration)
         if (invalidDuration !== undefined) {
           setMessage({ text: `参考音频时长为 ${invalidDuration.toFixed(1)} 秒，单个音频必须在 ${minDuration}–${maxDuration} 秒内`, type: 'error' })
@@ -456,7 +439,7 @@ export default function VideoWorkspace() {
           return
         }
         const totalDuration = durations.reduce((sum, duration) => sum + duration, 0)
-        const maxTotalDuration = capabilities.maxTotalAudioDuration ?? Number.POSITIVE_INFINITY
+        const maxTotalDuration = capabilities.maxTotalAudioDuration ?? 15
         if (totalDuration > maxTotalDuration) {
           setMessage({ text: `参考音频总时长为 ${totalDuration.toFixed(1)} 秒，不能超过 ${maxTotalDuration} 秒`, type: 'error' })
           setSubmitting(false)
@@ -476,20 +459,15 @@ export default function VideoWorkspace() {
       const localId = crypto.randomUUID()
       const draft: VideoTaskRecord = {
         id: localId,
-        provider: config.provider,
         prompt: prompt.trim(),
         model: config.model,
         aspectRatio: config.aspectRatio,
         duration: config.duration,
         resolution: config.resolution,
         generateAudio: true,
-        imageUrls: assetMode === 'references' ? imageUrls : [],
-        referenceVideo: assetMode === 'references' ? videoUrls[0] ?? '' : '',
-        videoUrls: assetMode === 'references' ? videoUrls : [],
-        audioUrls: assetMode === 'references' ? audioUrls : [],
-        autoFace: config.autoFace,
-        firstFrameUrl: assetMode === 'frames' ? firstFrameUrl : undefined,
-        lastFrameUrl: assetMode === 'frames' ? lastFrameUrl : undefined,
+        imageUrls,
+        referenceVideo,
+        audioUrls,
         status: 'submitting',
         progress: 0,
         createdAt: now,
@@ -497,23 +475,20 @@ export default function VideoWorkspace() {
       }
       setTasks((current) => [draft, ...current])
       try {
-        const result = await createProviderVideoTask(config.provider, apiKey, {
+        const result = await createVideoTask(VIDEO_API_BASE_URL, config.apiKey.trim(), {
           model: config.model,
           prompt: draft.prompt,
           aspectRatio: config.aspectRatio === '自动' ? undefined : config.aspectRatio,
           duration: config.duration || undefined,
           resolution: config.resolution === '自动' ? undefined : config.resolution,
           generateAudio: true,
-          imageUrls: assetMode === 'references' ? imageUrls : undefined,
-          videoUrls: assetMode === 'references' ? videoUrls : undefined,
-          audioUrls: assetMode === 'references' && audioUrls.length ? audioUrls : undefined,
-          autoFace: config.autoFace,
-          firstFrameUrl: assetMode === 'frames' ? firstFrameUrl : undefined,
-          lastFrameUrl: assetMode === 'frames' ? lastFrameUrl : undefined,
+          imageUrls,
+          referenceVideo: referenceVideo || undefined,
+          audioUrls: audioUrls.length ? audioUrls : undefined,
         })
         updateTask(localId, {
           publicTaskId: result.taskId,
-          videoUrl: getProviderVideoContentUrl(config.provider, result.task),
+          videoUrl: getVideoContentUrl(result.task),
           status: normalizeVideoTaskStatus(result.task.status),
           progress: normalizeVideoProgress(result.task.progress),
           error: normalizeVideoTaskStatus(result.task.status) === 'failed' ? getVideoTaskError(result.task) : undefined,
@@ -536,33 +511,26 @@ export default function VideoWorkspace() {
   }
 
   const retry = (task: VideoTaskRecord) => {
-    const provider = normalizeVideoProviderId(task.provider)
     setPrompt(task.prompt)
     setConfig((current) => ({
       ...current,
-      provider,
       model: task.model,
       aspectRatio: task.aspectRatio,
       duration: task.duration,
       resolution: task.resolution,
       generateAudio: true,
-      autoFace: task.autoFace === true,
       count: 1,
     }))
     setImageUrlText(task.imageUrls.join('\n'))
-    setVideoUrlText((task.videoUrls ?? (task.referenceVideo ? [task.referenceVideo] : [])).join('\n'))
+    setReferenceVideo(task.referenceVideo)
     setAudioUrlText((task.audioUrls ?? []).join('\n'))
-    setAssetMode(task.firstFrameUrl || task.lastFrameUrl ? 'frames' : 'references')
-    setFirstFrameUrl(task.firstFrameUrl ?? '')
-    setLastFrameUrl(task.lastFrameUrl ?? '')
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
   }
 
   const download = async (task: VideoTaskRecord) => {
     try {
       if (!task.publicTaskId) throw new Error('任务 ID 不存在')
-      const provider = normalizeVideoProviderId(task.provider)
-      const result = await downloadProviderVideoContent(provider, config.apiKeys[provider], task.publicTaskId, task.videoUrl)
+      const result = await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId, task.videoUrl)
       const url = URL.createObjectURL(result.blob)
       const link = document.createElement('a')
       link.href = url
@@ -639,7 +607,6 @@ export default function VideoWorkspace() {
                     <p className="line-clamp-2 min-h-10 text-sm leading-5 text-gray-800 dark:text-gray-200">{task.prompt}</p>
                     <div className="mt-3 flex items-center gap-2 text-[11px] text-gray-400">
                       <span className="max-w-[45%] truncate rounded bg-gray-100 px-2 py-1 dark:bg-white/[0.06]">{task.model}</span>
-                      <span>{getVideoProvider(normalizeVideoProviderId(task.provider)).name}</span>
                       <span>{task.resolution}</span>
                       <span>·</span>
                       <span>{getElapsed(task.createdAt, task.updatedAt)}</span>
@@ -681,37 +648,17 @@ export default function VideoWorkspace() {
       )}
 
       <div data-no-drag-select className="safe-area-x fixed inset-x-0 bottom-0 z-30 pb-[calc(16px+env(safe-area-inset-bottom,0px))]">
-        <div className="mx-auto max-h-[calc(100dvh-72px)] max-w-5xl overflow-y-auto rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-[0_-8px_40px_rgba(0,0,0,0.08)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-gray-950/95 sm:p-4">
+        <div className="mx-auto max-w-5xl overflow-visible rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-[0_-8px_40px_rgba(0,0,0,0.08)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-gray-950/95 sm:p-4">
           {showConfig && (
-            <div className="mb-3 grid gap-3 border-b border-gray-100 pb-3 dark:border-white/[0.06] sm:grid-cols-[140px_1fr_1fr_auto]">
-              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">渠道</span><select value={config.provider} onChange={(e) => setConfig({ ...config, provider: normalizeVideoProviderId(e.target.value) })} className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white">{VIDEO_PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
-              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">接口地址</span><input value={getVideoProvider(config.provider).apiBaseUrl} readOnly aria-readonly="true" className="h-10 w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-100 px-3 text-sm text-gray-500 outline-none dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-400" /></label>
-              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">API Key</span><input type="password" value={config.apiKeys[config.provider]} onChange={(e) => setConfig({ ...config, apiKeys: { ...config.apiKeys, [config.provider]: e.target.value } })} placeholder="sk-..." className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
+            <div className="mb-3 grid gap-3 border-b border-gray-100 pb-3 dark:border-white/[0.06] sm:grid-cols-[1fr_1fr_auto]">
+              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">接口地址</span><input value={VIDEO_API_BASE_URL} readOnly aria-readonly="true" className="h-10 w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-100 px-3 text-sm text-gray-500 outline-none dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-400" /></label>
+              <label className="min-w-0"><span className="mb-1 block text-[11px] text-gray-400">API Key</span><input type="password" value={config.apiKey} onChange={(e) => setConfig({ ...config, apiKey: e.target.value })} placeholder="sk-..." className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white" /></label>
               <button type="button" onClick={() => void loadModels()} disabled={loadingModels} className="self-end rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900">{loadingModels ? '同步中' : '同步模型'}</button>
             </div>
           )}
           {message && <div className={`mb-3 flex items-center justify-between rounded-lg px-3 py-2 text-xs ${message.type === 'error' ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'}`}><span>{message.text}</span><button type="button" onClick={() => setMessage(null)} className="px-1 text-base leading-none" aria-label="关闭提示">×</button></div>}
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') void submit() }} placeholder="描述镜头、主体动作、场景和风格…" rows={2} className="w-full resize-none bg-transparent px-1 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400 dark:text-white" />
-          {capabilities.firstLastFrame && <div className="mt-2 flex gap-1 border-t border-gray-100 pt-3 dark:border-white/[0.06]">
-            <button type="button" onClick={() => setAssetMode('references')} className={`rounded-md px-3 py-1.5 text-xs transition ${assetMode === 'references' ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/[0.06]'}`}>参考素材</button>
-            <button type="button" onClick={() => setAssetMode('frames')} className={`rounded-md px-3 py-1.5 text-xs transition ${assetMode === 'frames' ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/[0.06]'}`}>首尾帧</button>
-          </div>}
-          {assetMode === 'frames' ? (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              {([['firstFrame', '首帧图片', firstFrameUrl, setFirstFrameUrl], ['lastFrame', '尾帧图片', lastFrameUrl, setLastFrameUrl]] as const).map(([kind, label, url, setUrl]) => (
-                <div key={kind}>
-                  <span className="mb-1 block text-[11px] text-gray-400">{label}</span>
-                  <div className="flex min-h-[58px] items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
-                    {url ? <>
-                      <button type="button" onClick={() => setAssetPreview({ kind: 'image', url, title: label })} className="flex h-10 min-w-0 flex-1 items-center gap-3 overflow-hidden rounded bg-white px-2 text-left text-xs text-gray-600 dark:bg-white/[0.06] dark:text-gray-300"><img src={url} alt={label} className="h-10 w-16 flex-none rounded object-cover" /><span>查看{label}</span></button>
-                      <button type="button" onClick={() => setUrl('')} title={`移除${label}`} aria-label={`移除${label}`} className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
-                    </> : <span className="px-1 text-xs text-gray-400">尚未上传{label}</span>}
-                  </div>
-                  <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, kind) }} />{uploadingAsset === kind ? '上传中…' : `上传${label}`}</label>
-                </div>
-              ))}
-            </div>
-          ) : <div className={`${capabilities.firstLastFrame ? 'mt-2' : 'mt-2 border-t border-gray-100 pt-3 dark:border-white/[0.06]'} grid gap-2 sm:grid-cols-2`}>
+          <div className="mt-2 grid gap-2 border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:grid-cols-2">
               <div>
                 <span className="mb-1 block text-[11px] text-gray-400">参考图片（最多 {capabilities.maxImages} 张）</span>
                 <div className="flex min-h-[58px] flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
@@ -725,19 +672,17 @@ export default function VideoWorkspace() {
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" disabled={!capabilities.maxImages || uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'image') }} />{uploadingAsset === 'image' ? '上传中…' : '上传图片'}</label>
               </div>
               {capabilities.referenceVideo && <div>
-                <span className="mb-1 block text-[11px] text-gray-400">参考视频（最多 {capabilities.maxVideos ?? 1} 个{capabilities.minReferenceVideoDuration !== undefined && capabilities.maxReferenceVideoDuration !== undefined ? `，单个 ${capabilities.minReferenceVideoDuration}–${capabilities.maxReferenceVideoDuration} 秒` : ''}）</span>
-                <div className="flex min-h-[58px] flex-col justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
-                  {videoUrls.length ? videoUrls.map((url, idx) => (
-                    <div key={`${url}-${idx}`} className="flex min-w-0 items-center gap-2">
-                      <button type="button" onClick={() => setAssetPreview({ kind: 'video', url, title: `参考视频 ${idx + 1}` })} className="flex h-10 min-w-0 flex-1 items-center gap-3 overflow-hidden rounded bg-gray-900 px-3 text-left text-xs text-white"><video src={url} muted playsInline preload="metadata" className="h-10 w-16 flex-none bg-black object-cover" /><span>查看参考视频 {idx + 1}</span></button>
-                      <button type="button" onClick={() => setVideoUrlText(videoUrls.filter((_, videoIdx) => videoIdx !== idx).join('\n'))} title="移除视频" aria-label={`移除参考视频 ${idx + 1}`} className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
-                    </div>
-                  )) : <span className="px-1 text-xs text-gray-400">尚未上传视频</span>}
+                <span className="mb-1 block text-[11px] text-gray-400">参考视频（{capabilities.minReferenceVideoDuration ?? 0}–{capabilities.maxReferenceVideoDuration ?? 30} 秒）</span>
+                <div className="flex min-h-[58px] items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
+                  {referenceVideo ? <>
+                    <button type="button" onClick={() => setAssetPreview({ kind: 'video', url: referenceVideo, title: '参考视频' })} className="flex h-10 min-w-0 flex-1 items-center gap-3 overflow-hidden rounded bg-gray-900 px-3 text-left text-xs text-white"><video src={referenceVideo} muted playsInline preload="metadata" className="h-10 w-16 flex-none bg-black object-cover" /><span>查看参考视频</span></button>
+                    <button type="button" onClick={() => setReferenceVideo('')} title="移除视频" aria-label="移除参考视频" className="flex h-8 w-8 flex-none items-center justify-center rounded text-gray-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"><TrashIcon className="h-4 w-4" /></button>
+                  </> : <span className="px-1 text-xs text-gray-400">尚未上传视频</span>}
                 </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" multiple className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
+                <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'video') }} />{uploadingAsset === 'video' ? '上传中…' : '上传视频'}</label>
               </div>}
               {capabilities.maxAudios && <div>
-                <span className="mb-1 block text-[11px] text-gray-400">参考音频（最多 {capabilities.maxAudios} 个{capabilities.minAudioDuration !== undefined && capabilities.maxAudioDuration !== undefined ? `，单个 ${capabilities.minAudioDuration}–${capabilities.maxAudioDuration} 秒` : ''}{capabilities.maxTotalAudioDuration ? `，合计最多 ${capabilities.maxTotalAudioDuration} 秒` : ''}）</span>
+                <span className="mb-1 block text-[11px] text-gray-400">参考音频（最多 {capabilities.maxAudios} 个，总时长 15 秒）</span>
                 <div className="flex min-h-[58px] flex-col justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-white/[0.08] dark:bg-white/[0.04]">
                   {audioUrls.length ? audioUrls.map((url, idx) => (
                     <div key={`${url}-${idx}`} className="flex min-w-0 items-center gap-2">
@@ -748,7 +693,7 @@ export default function VideoWorkspace() {
                 </div>
                 <label className="mt-2 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 transition hover:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300"><input type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/ogg,audio/aac" multiple className="sr-only" disabled={uploadingAsset !== null} onChange={(e) => { const files = Array.from(e.target.files ?? []); e.currentTarget.value = ''; void uploadAssets(files, 'audio') }} />{uploadingAsset === 'audio' ? '上传中…' : '上传音频'}</label>
               </div>}
-          </div>}
+          </div>
           <div className="mt-3 flex flex-wrap items-end gap-2">
             <label className="min-w-[170px] flex-1 sm:flex-none"><span className="mb-1 block text-[11px] text-gray-400">模型 {capabilities.experimental ? '· 测试中' : ''}</span><select value={config.model} onChange={(e) => setConfig({ ...config, model: e.target.value })} className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs outline-none dark:border-white/[0.08] dark:bg-gray-900 dark:text-white"><option value="">选择模型</option>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
             <label><span className="mb-1 block text-[11px] text-gray-400">比例</span><select value={config.aspectRatio} onChange={(e) => setConfig({ ...config, aspectRatio: e.target.value })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{capabilities.ratios.map((value) => <option key={value}>{value}</option>)}</select></label>
@@ -758,7 +703,6 @@ export default function VideoWorkspace() {
               : <span className="flex h-10 min-w-[76px] items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs text-gray-700 dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-200">{capabilities.resolutions[0] ?? '自动'}</span>}
             </label>
             <label><span className="mb-1 block text-[11px] text-gray-400">数量</span><select value={config.count} onChange={(e) => setConfig({ ...config, count: Number(e.target.value) })} className="h-10 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs dark:border-white/[0.08] dark:bg-gray-900 dark:text-white">{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
-            {capabilities.autoFace && <label className="flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs text-gray-600 dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-300"><input type="checkbox" checked={config.autoFace} onChange={(e) => setConfig({ ...config, autoFace: e.target.checked })} className="h-4 w-4 accent-blue-600" />真人处理</label>}
             <button type="button" onClick={() => setShowConfig(!showConfig)} title="视频接口配置" aria-label="视频接口配置" className={`flex h-10 w-10 items-center justify-center rounded-lg border transition ${showConfig ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10' : 'border-gray-200 text-gray-500 dark:border-white/[0.08]'}`}><SettingsIcon className="h-4 w-4" /></button>
             <button type="button" onClick={() => void submit()} disabled={submitting} className="ml-auto flex h-10 min-w-[92px] items-center justify-center rounded-lg bg-blue-600 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting ? '提交中' : '生成视频'}</button>
           </div>
