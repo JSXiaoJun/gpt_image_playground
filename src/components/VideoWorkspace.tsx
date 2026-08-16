@@ -183,6 +183,7 @@ export default function VideoWorkspace() {
   const [loadingPreviewTaskId, setLoadingPreviewTaskId] = useState<string | null>(null)
   const [assetPreview, setAssetPreview] = useState<{ kind: 'image' | 'video' | 'audio'; url: string; title: string } | null>(null)
   const pollingRef = useRef(new Set<string>())
+  const previewFallbackRef = useRef(new Set<string>())
   const videoPreviewRef = useRef<{ taskId: string; url: string } | null>(null)
   const tasksRef = useRef<VideoTaskRecord[]>(tasks)
 
@@ -301,6 +302,42 @@ export default function VideoWorkspace() {
       if (!streaming) setLoadingPreviewTaskId(null)
     }
   }, [config.apiKey, loadingPreviewTaskId, updateTask])
+
+  const handlePreviewError = useCallback(async (task: VideoTaskRecord) => {
+    const failedPreview = videoPreviewRef.current
+    if (!task.publicTaskId || !failedPreview || failedPreview.taskId !== task.id) return
+    if (failedPreview.url.startsWith('blob:')) {
+      URL.revokeObjectURL(failedPreview.url)
+      videoPreviewRef.current = null
+      setVideoPreview(null)
+      setLoadingPreviewTaskId(null)
+      setMessage({ text: '当前浏览器无法播放该视频编码，请下载后查看', type: 'error' })
+      return
+    }
+    if (previewFallbackRef.current.has(task.id)) return
+
+    previewFallbackRef.current.add(task.id)
+    setLoadingPreviewTaskId(task.id)
+    try {
+      const result = await downloadVideoContent(VIDEO_API_BASE_URL, config.apiKey, task.publicTaskId)
+      const url = URL.createObjectURL(result.blob)
+      if (videoPreviewRef.current !== failedPreview) {
+        URL.revokeObjectURL(url)
+        return
+      }
+      const preview = { taskId: task.id, url }
+      videoPreviewRef.current = preview
+      setVideoPreview(preview)
+    } catch (err) {
+      if (videoPreviewRef.current !== failedPreview) return
+      videoPreviewRef.current = null
+      setVideoPreview(null)
+      setLoadingPreviewTaskId(null)
+      setMessage({ text: err instanceof Error ? `视频预览加载失败：${err.message}` : '视频预览加载失败', type: 'error' })
+    } finally {
+      previewFallbackRef.current.delete(task.id)
+    }
+  }, [config.apiKey])
 
   const pollTask = useCallback(async (task: VideoTaskRecord) => {
     if (!task.publicTaskId || pollingRef.current.has(task.id)) return
@@ -580,12 +617,7 @@ export default function VideoWorkspace() {
                           playsInline
                           preload="metadata"
                           onLoadedMetadata={() => setLoadingPreviewTaskId(null)}
-                          onError={() => {
-                            videoPreviewRef.current = null
-                            setVideoPreview(null)
-                            setLoadingPreviewTaskId(null)
-                            setMessage({ text: '视频预览加载失败，请重试或下载后查看', type: 'error' })
-                          }}
+                          onError={() => void handlePreviewError(task)}
                           className="h-full w-full object-contain"
                         />
                         {loadingPreviewTaskId === task.id && <div className="absolute inset-0 flex items-center justify-center bg-gray-950/70"><div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-700 border-t-blue-500" /></div>}

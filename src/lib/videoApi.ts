@@ -128,10 +128,13 @@ export function fetchVideoTask(baseUrl: string, apiKey: string, taskId: string) 
 
 export async function downloadVideoContent(baseUrl: string, apiKey: string, taskId: string, publicUrl?: string) {
   const directUrl = normalizeVideoContentUrl(publicUrl)
-  const response = await fetch(directUrl || getUrl(baseUrl, `/v1/videos/${encodeURIComponent(taskId)}/content`), {
-    ...(directUrl ? {} : { headers: getHeaders(apiKey) }),
-    cache: 'no-store',
-  })
+  const fallbackUrl = getUrl(baseUrl, `/v1/videos/${encodeURIComponent(taskId)}/content`)
+  const directResponse = directUrl
+    ? await fetch(directUrl, { cache: 'no-store' }).catch(() => null)
+    : null
+  const response = directResponse?.ok
+    ? directResponse
+    : await fetch(fallbackUrl, { headers: getHeaders(apiKey), cache: 'no-store' })
   if (!response.ok) throw new Error(await getApiError(response))
   const contentType = response.headers.get('content-type')?.split(';')[0].trim() || ''
   if (!contentType.toLowerCase().startsWith('video/') && contentType.toLowerCase() !== 'application/octet-stream') {

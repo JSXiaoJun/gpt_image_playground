@@ -160,6 +160,34 @@ describe('videoApi', () => {
     )
   })
 
+  it('falls back to the authenticated endpoint when the public media URL expired', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('expired', { status: 410 }))
+      .mockResolvedValueOnce(new Response('video', {
+        status: 200,
+        headers: { 'content-type': 'video/mp4' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await downloadVideoContent(
+      'https://zl.yyapi.cloud',
+      'sk-test',
+      'task-1',
+      'https://media.yyapi.cloud/public/videos/task_test_1/content',
+    )
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://media.yyapi.cloud/public/videos/task_test_1/content',
+      { cache: 'no-store' },
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://zl.yyapi.cloud/v1/videos/task-1/content',
+      { headers: { Authorization: 'Bearer sk-test' }, cache: 'no-store' },
+    )
+  })
+
   it('keeps the authenticated fallback for historical tasks without a public URL', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('video', {
       status: 200,
